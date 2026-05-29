@@ -65,7 +65,7 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .learning-mini { display: grid; gap: 8px; width: 100%; margin-bottom: 8px; border: 1px solid var(--line-soft); border-radius: 16px; background: var(--surface); padding: 12px; box-shadow: var(--shadow-sm); }
 .learning-mini strong { font-size: 13px; line-height: 1.3; }
 .learning-mini span { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
-.mini-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; }
+.mini-actions { display: grid; grid-template-columns: repeat(2, 1fr); gap: 7px; }
 .user-menu-slot { margin-top: 8px; }
 
 .main { min-width: 0; height: 100vh; overflow: hidden; background: transparent; position: relative; }
@@ -147,15 +147,22 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .form-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .inline-create { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
 .align-end { display: flex; justify-content: flex-end; gap: 8px; }
-.task-list { display: grid; gap: 8px; margin-top: 18px; }
+.task-list { display: grid; justify-items: center; gap: 8px; margin-top: 18px; }
+.task-list-head, .task-search-panel, .task-list > .list-row, .task-list > .empty-state { width: min(760px, 100%); }
 .task-list-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 4px; }
 .task-list-head h2 { margin: 0; font-size: 20px; }
+.task-search-panel { display: grid; grid-template-columns: minmax(0, 1fr) 150px; gap: 10px; align-items: center; margin-bottom: 6px; padding: 10px; border: 1px solid var(--line-soft); border-radius: 16px; background: rgba(255,255,255,.72); box-shadow: var(--shadow-sm); }
+.task-search-panel input, .task-search-panel select { width: 100%; min-height: 40px; border: 1px solid var(--line); border-radius: 12px; background: rgba(255,255,255,.96); color: var(--text); padding: 0 12px; outline: 0; }
 .empty-state { min-height: 88px; display: grid; place-items: center; border: 1px dashed var(--line); border-radius: 16px; color: var(--muted); background: rgba(255,255,255,.54); }
 
 .schedule-toolbar { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 16px; margin-bottom: 14px; }
 .week-title { text-align: center; font-size: 20px; font-weight: 760; }
 .calendar-card { border-radius: var(--radius-lg); overflow: hidden; box-shadow: var(--shadow-md); }
 .calendar-hint { display: flex; align-items: center; justify-content: space-between; min-height: 56px; padding: 0 16px; border-bottom: 1px solid var(--line-soft); color: var(--muted); font-size: 14px; background: linear-gradient(180deg, rgba(255,255,255,.95), rgba(250,250,248,.92)); }
+.schedule-view-switcher { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); flex: 0 0 auto; min-width: 174px; padding: 3px; border: 1px solid var(--line-soft); border-radius: 999px; background: rgba(255,255,255,.94); box-shadow: inset 0 1px 0 rgba(255,255,255,.86), var(--shadow-sm); }
+.schedule-view-option { min-height: 32px; border: 0; border-radius: 999px; padding: 0 12px; color: var(--muted); background: transparent; font-size: 13px; font-weight: 680; white-space: nowrap; cursor: pointer; transition: background .16s ease, color .16s ease, box-shadow .16s ease; }
+.schedule-view-option:hover { color: var(--text); background: rgba(32,32,29,.045); }
+.schedule-view-option.active { color: var(--green-dark); background: var(--green-soft); font-weight: 780; box-shadow: 0 1px 2px rgba(12,135,105,.16); }
 .week-head { display: grid; grid-template-columns: 56px repeat(7, 1fr); border-bottom: 1px solid var(--line-soft); }
 .day-cell { min-height: 86px; display: grid; place-items: center; border-left: 1px solid var(--line-soft); font-weight: 760; background: rgba(255,255,255,.65); }
 .day-cell small { display: block; color: var(--muted); text-align: center; margin-bottom: 8px; font-weight: 680; }
@@ -256,6 +263,8 @@ button:disabled { opacity: .55; cursor: not-allowed; }
   .draft-list, .form-row, .finish-grid { grid-template-columns: 1fr; }
   .content, .plan-frame, .chat-shell { padding-inline: 18px; }
   .schedule-toolbar { grid-template-columns: 1fr; }
+  .calendar-hint { align-items: flex-start; flex-direction: column; gap: 10px; padding-block: 12px; }
+  .schedule-view-switcher { width: min(100%, 240px); }
   .learning-bar { min-width: 0; }
   .composer { grid-template-columns: auto 1fr auto; }
   .composer .plain-btn { display: none; }

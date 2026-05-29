@@ -78,9 +78,8 @@ export function Sidebar({
                     <strong>{timer.taskTitle || "当前学习会话"}</strong>
                     <span>{timer.running ? `${timer.subject} · ${timer.elapsed}` : "暂无进行中的计时"}</span>
                     <div className="mini-actions">
-                        <button className="mini-btn" onClick={() => openModal("timer")}>计时</button>
-                        <button className="mini-btn" onClick={startQuickTimer}>正计时</button>
-                        <button className="mini-btn" onClick={() => setView("subject")}>去学科</button>
+                        <button className="mini-btn" onClick={() => { startQuickTimer(); openModal("timer"); }}>计时</button>
+                        <button className="mini-btn" onClick={() => setView("subject")}>去学习</button>
                     </div>
                 </div>
                 <button className={`nav-item ${view === "settings" ? "active" : ""}`} onClick={() => setView("settings")}><span className="nav-label">设置</span></button>

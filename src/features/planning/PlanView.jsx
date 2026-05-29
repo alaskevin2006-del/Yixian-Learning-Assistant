@@ -1,5 +1,12 @@
 import { Fragment, useState } from "react";
 import { Composer, MessageBubble } from "../../components/common/ChatPrimitives";
+import { filterTasksForPanel } from "./taskFilters";
+
+const scheduleViewOptions = [
+    { key: "morning", label: "上午" },
+    { key: "afternoon", label: "下午" },
+    { key: "full", label: "全天" },
+];
 
 export function PlanView({
     planTab,
@@ -105,13 +112,14 @@ export function PlanView({
 function TasksPanel({ form, setForm, saveTask, tasks, subjects, startTimer, createSubject }) {
     const [taskView, setTaskView] = useState("new");
     const [newSubjectName, setNewSubjectName] = useState("");
+    const [taskQuery, setTaskQuery] = useState("");
+    const [taskLevel, setTaskLevel] = useState("all");
     const activeSubjectFilter = taskView.startsWith("subject:") ? taskView.slice("subject:".length) : "";
     const activeSubject = subjects.find((subject) => subject.id === activeSubjectFilter);
-    const visibleTasks = tasks.filter((task) => {
-        if (taskView === "new" || taskView === "all") return true;
-        if (taskView === "uncategorized") return !task.subject;
-        if (activeSubject) return task.subject === activeSubject.name;
-        return true;
+    const visibleTasks = filterTasksForPanel(tasks, subjects, {
+        taskView,
+        query: taskQuery,
+        level: taskLevel,
     });
     const viewTitle = taskView === "new"
         ? "新建任务"
@@ -174,6 +182,14 @@ function TasksPanel({ form, setForm, saveTask, tasks, subjects, startTimer, crea
                         <h2>{taskView === "new" ? "最近任务" : viewTitle}</h2>
                         <span className="muted">{visibleTasks.length} 个任务</span>
                     </div>
+                    <div className="task-search-panel">
+                        <input value={taskQuery} onChange={(event) => setTaskQuery(event.target.value)} placeholder="检索任务、学科或说明" />
+                        <select className="form-control" value={taskLevel} onChange={(event) => setTaskLevel(event.target.value)}>
+                            <option value="all">全部层级</option>
+                            <option value="with-subject">已归入学科</option>
+                            <option value="uncategorized">待归档</option>
+                        </select>
+                    </div>
                     {visibleTasks.map((task) => (
                         <div className="list-row" key={task.id}>
                             <div><strong>{task.title}</strong><div className="muted">{task.subject || "待归档"} · {task.date} {task.start}-{task.end}</div></div>
@@ -191,7 +207,13 @@ function TasksPanel({ form, setForm, saveTask, tasks, subjects, startTimer, crea
 
 function ScheduleView({ tasks }) {
     const [weekOffset, setWeekOffset] = useState(0);
-    const hours = Array.from({ length: 17 }, (_, index) => index + 7);
+    const [scheduleViewMode, setScheduleViewMode] = useState("full");
+    const hours = Array.from({ length: 24 }, (_, index) => index);
+    const visibleHours = scheduleViewMode === "morning"
+        ? hours.filter((hour) => hour <= 12)
+        : scheduleViewMode === "afternoon"
+            ? hours.filter((hour) => hour >= 13)
+            : hours;
     const today = new Date();
     const weekDays = Array.from({ length: 7 }, (_, index) => {
         const date = new Date(today);
@@ -216,7 +238,19 @@ function ScheduleView({ tasks }) {
             <div className="calendar-card">
                 <div className="calendar-hint">
                     <span>点击日程卡片可查看详情、开始学习或调整时间。</span>
-                    <button className="plain-btn">查看全天 24 小时</button>
+                    <div className="schedule-view-switcher" aria-label="切换日程显示范围">
+                        {scheduleViewOptions.map((option) => (
+                            <button
+                                className={`schedule-view-option ${scheduleViewMode === option.key ? "active" : ""}`}
+                                key={option.key}
+                                onClick={() => setScheduleViewMode(option.key)}
+                                type="button"
+                                aria-pressed={scheduleViewMode === option.key}
+                            >
+                                {option.label}
+                            </button>
+                        ))}
+                    </div>
                 </div>
                 <div className="week-head">
                     <div />
@@ -227,7 +261,7 @@ function ScheduleView({ tasks }) {
                     ))}
                 </div>
                 <div className="calendar-body">
-                    {hours.map((hour) => (
+                    {visibleHours.map((hour) => (
                         <Fragment key={hour}>
                             <div className="time-label" key={`time-${hour}`}>{String(hour).padStart(2, "0")}:00</div>
                             {weekDays.map((day) => {

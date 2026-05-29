@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { POMODORO_SECONDS, TIMER_MODE, formatTimerSeconds, getPomodoroRemaining } from "./timerLogic";
 
 export function ActionDialog({ dialog, subjects, close, openRenameDialog, onDeleteSubject, onDeleteConversation, onMoveConversation }) {
     if (!dialog) return null;
@@ -159,16 +160,73 @@ export function SourceModal({ open, query, setQuery, search, results, addResourc
 
 
 export function TimerModal({ open, timer, setTimer, close, finish }) {
+    const [timerMode, setTimerMode] = useState(TIMER_MODE.stopwatch);
+    const [pomodoroRunning, setPomodoroRunning] = useState(false);
+    const [pomodoroStartedAt, setPomodoroStartedAt] = useState("");
+    const [pomodoroRemaining, setPomodoroRemaining] = useState(POMODORO_SECONDS);
+
+    useEffect(() => {
+        if (!open || timerMode !== TIMER_MODE.pomodoro || !pomodoroRunning || !pomodoroStartedAt) return undefined;
+        const updatePomodoro = () => {
+            const remaining = getPomodoroRemaining(pomodoroStartedAt);
+            setPomodoroRemaining(remaining);
+            if (remaining <= 0) setPomodoroRunning(false);
+        };
+        updatePomodoro();
+        const id = window.setInterval(updatePomodoro, 1000);
+        return () => window.clearInterval(id);
+    }, [open, pomodoroRunning, pomodoroStartedAt, timerMode]);
+
     if (!open) return null;
+    const isPomodoro = timerMode === TIMER_MODE.pomodoro;
+    const timerLabel = isPomodoro ? "番茄钟剩余" : "本次学习已进行";
+    const timerHint = isPomodoro
+        ? "番茄钟会从 25:00 倒计时，到时自动停止。"
+        : "点击开始后持续累计，结束学习时记录本次时长。";
+    const toggleTimer = () => {
+        if (isPomodoro) {
+            setPomodoroRunning((value) => {
+                if (value) return false;
+                setPomodoroStartedAt(new Date().toISOString());
+                return true;
+            });
+            return;
+        }
+        setTimer((prev) => ({ ...prev, running: !prev.running, startedAt: prev.startedAt || new Date().toISOString() }));
+    };
+    const resetTimer = () => {
+        if (isPomodoro) {
+            setPomodoroRunning(false);
+            setPomodoroStartedAt("");
+            setPomodoroRemaining(POMODORO_SECONDS);
+            return;
+        }
+        setTimer((prev) => ({ ...prev, running: false, startedAt: "", elapsed: "00:00" }));
+    };
+    const selectTimerMode = (nextMode) => {
+        setTimerMode(nextMode);
+        if (nextMode === TIMER_MODE.pomodoro) {
+            setTimer((prev) => ({ ...prev, running: false }));
+            setPomodoroRunning(false);
+            setPomodoroStartedAt("");
+            setPomodoroRemaining(POMODORO_SECONDS);
+        }
+    };
+    const displayValue = isPomodoro ? formatTimerSeconds(pomodoroRemaining) : timer.elapsed;
+    const isRunning = isPomodoro ? pomodoroRunning : timer.running;
+
     return (
         <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
             <div className="modal">
                 <div className="modal-head"><span>当前学习计时</span><button className="icon-btn" onClick={close}>×</button></div>
                 <div className="modal-body"><div className="modal-stack">
                     <div><h3>{timer.taskTitle || "当前任务"}</h3><div className="muted">绑定当前任务和当前对话，结束后回写实际学习时间。</div></div>
-                    <div className="timer-mode"><button className="active">正计时</button><button disabled>番茄钟</button></div>
-                    <div className="timer-display"><span className="muted">本次学习已进行</span><strong>{timer.elapsed}</strong><span className="muted">点击开始后持续累计，结束学习时记录本次时长。</span></div>
-                    <div className="button-row"><button className="primary-btn" onClick={() => setTimer((prev) => ({ ...prev, running: !prev.running, startedAt: prev.startedAt || new Date().toISOString() }))}>{timer.running ? "暂停" : "开始"}</button><button className="plain-btn">跳过休息</button><button className="plain-btn" onClick={finish}>结束学习</button></div>
+                    <div className="timer-mode">
+                        <button className={timerMode === TIMER_MODE.stopwatch ? "active" : ""} onClick={() => selectTimerMode(TIMER_MODE.stopwatch)}>正计时</button>
+                        <button className={isPomodoro ? "active" : ""} onClick={() => selectTimerMode(TIMER_MODE.pomodoro)}>番茄钟</button>
+                    </div>
+                    <div className="timer-display"><span className="muted">{timerLabel}</span><strong>{displayValue}</strong><span className="muted">{timerHint}</span></div>
+                    <div className="button-row"><button className="primary-btn" onClick={toggleTimer}>{isRunning ? "暂停" : "开始"}</button><button className="plain-btn" onClick={resetTimer}>{isPomodoro ? "重置番茄钟" : "重置计时"}</button><button className="plain-btn" onClick={finish}>结束学习</button></div>
                 </div></div>
             </div>
         </div>
