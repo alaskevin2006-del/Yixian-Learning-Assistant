@@ -1,0 +1,154 @@
+:root {
+  --text: #6b6375;
+  --text-h: #08060d;
+  --bg: #fff;
+  --border: #e5e4e7;
+  --code-bg: #f4f3ec;
+  --accent: #aa3bff;
+  --accent-bg: rgba(170, 59, 255, 0.1);
+  --accent-border: rgba(170, 59, 255, 0.5);
+  --social-bg: rgba(244, 243, 236, 0.5);
+  --shadow:
+    rgba(0, 0, 0, 0.1) 0 10px 15px -3px, rgba(0, 0, 0, 0.05) 0 4px 6px -2px;
+
+  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
+  --heading: system-ui, 'Segoe UI', Roboto, sans-serif;
+  --mono: ui-monospace, Consolas, monospace;
+
+  --cal-bg: #f2f2f7;
+  --cal-surface: rgba(255, 255, 255, 0.9);
+  --cal-surface-strong: #ffffff;
+  --cal-separator: rgba(60, 60, 67, 0.18);
+  --cal-separator-strong: rgba(60, 60, 67, 0.36);
+  --cal-text: rgba(0, 0, 0, 0.88);
+  --cal-text-secondary: rgba(60, 60, 67, 0.6);
+  --cal-text-tertiary: rgba(60, 60, 67, 0.36);
+  --cal-tint: #007aff;
+  --cal-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+  --cal-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, "Segoe UI", Roboto, sans-serif;
+  --cal-event-blue-bg: rgba(0, 122, 255, 0.16);
+  --cal-event-blue-border: #007aff;
+  --cal-event-purple-bg: rgba(175, 82, 222, 0.16);
+  --cal-event-purple-border: #af52de;
+  --cal-event-red-bg: rgba(255, 59, 48, 0.16);
+  --cal-event-red-border: #ff3b30;
+  --cal-event-green-bg: rgba(52, 199, 89, 0.16);
+  --cal-event-green-border: #34c759;
+  --cal-event-muted-bg: rgba(142, 142, 147, 0.14);
+  --cal-event-muted-border: rgba(142, 142, 147, 0.65);
+
+  font: 18px/145% var(--sans);
+  letter-spacing: 0.18px;
+  color-scheme: light dark;
+  color: var(--text);
+  background: var(--bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  @media (max-width: 1024px) {
+    font-size: 16px;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --text: #9ca3af;
+    --text-h: #f3f4f6;
+    --bg: #16171d;
+    --border: #2e303a;
+    --code-bg: #1f2028;
+    --accent: #c084fc;
+    --accent-bg: rgba(192, 132, 252, 0.15);
+    --accent-border: rgba(192, 132, 252, 0.5);
+    --social-bg: rgba(47, 48, 58, 0.5);
+    --shadow:
+      rgba(0, 0, 0, 0.4) 0 10px 15px -3px, rgba(0, 0, 0, 0.25) 0 4px 6px -2px;
+
+    --cal-bg: #000000;
+    --cal-surface: rgba(28, 28, 30, 0.85);
+    --cal-surface-strong: #1c1c1e;
+    --cal-separator: rgba(84, 84, 88, 0.28);
+    --cal-separator-strong: rgba(84, 84, 88, 0.55);
+    --cal-text: rgba(255, 255, 255, 0.9);
+    --cal-text-secondary: rgba(235, 235, 245, 0.6);
+    --cal-text-tertiary: rgba(235, 235, 245, 0.36);
+    --cal-tint: #0a84ff;
+    --cal-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
+    --cal-event-blue-bg: rgba(10, 132, 255, 0.22);
+    --cal-event-blue-border: #0a84ff;
+    --cal-event-purple-bg: rgba(191, 90, 242, 0.22);
+    --cal-event-purple-border: #bf5af2;
+    --cal-event-red-bg: rgba(255, 69, 58, 0.22);
+    --cal-event-red-border: #ff453a;
+    --cal-event-green-bg: rgba(48, 209, 88, 0.22);
+    --cal-event-green-border: #30d158;
+    --cal-event-muted-bg: rgba(142, 142, 147, 0.18);
+    --cal-event-muted-border: rgba(142, 142, 147, 0.7);
+  }
+
+  #social .button-icon {
+    filter: invert(1) brightness(2);
+  }
+}
+
+body {
+  margin: 0;
+}
+
+#root {
+  width: 1126px;
+  max-width: 100%;
+  margin: 0 auto;
+  text-align: center;
+  border-inline: 1px solid var(--border);
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+
+h1,
+h2 {
+  font-family: var(--heading);
+  font-weight: 500;
+  color: var(--text-h);
+}
+
+h1 {
+  font-size: 56px;
+  letter-spacing: -1.68px;
+  margin: 32px 0;
+  @media (max-width: 1024px) {
+    font-size: 36px;
+    margin: 20px 0;
+  }
+}
+h2 {
+  font-size: 24px;
+  line-height: 118%;
+  letter-spacing: -0.24px;
+  margin: 0 0 8px;
+  @media (max-width: 1024px) {
+    font-size: 20px;
+  }
+}
+p {
+  margin: 0;
+}
+
+code,
+.counter {
+  font-family: var(--mono);
+  display: inline-flex;
+  border-radius: 4px;
+  color: var(--text-h);
+}
+
+code {
+  font-size: 15px;
+  line-height: 135%;
+  padding: 4px 8px;
+  background: var(--code-bg);
+}
