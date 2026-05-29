@@ -47,12 +47,21 @@ import "./FlowApp.css";
 
 const uid = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
 const todayKey = () => new Date().toISOString().slice(0, 10);
+const DEMO_SOURCE = "demo";
+const DEMO_SUBJECT_ID = "subject-demo";
+const DEMO_SUBJECT_NAME = "范例：机器学习导论";
+const DEMO_PLAN_THEME = "范例：机器学习导论期末复习";
+const DEMO_PLANNING_ID = "conv-demo-ml-final";
+const DEMO_SUBJECT_CONVERSATION_ID = "subject-conv-demo-ml-final";
+const DEMO_GOAL = "两周内完成机器学习导论期末复习，重点掌握监督学习、模型评估、神经网络基础，并完成一份复习总结。";
 
 const DEFAULT_SUBJECTS = [
     {
-        id: "subject-demo",
-        name: "示例学科",
-        instruction: "这是示例学科的长期学习空间。回答时优先结合本学科来源资料、任务、对话记录和复盘历史。",
+        id: DEMO_SUBJECT_ID,
+        name: DEMO_SUBJECT_NAME,
+        instruction: "范例学科空间：围绕机器学习导论期末复习，回答时优先结合监督学习、模型评估、神经网络基础、往年题和复习总结资料。",
+        source: DEMO_SOURCE,
+        isDemo: true,
     },
 ];
 
@@ -115,6 +124,314 @@ function timeRangeFor(index) {
         ["20:30", "22:00"],
     ];
     return ranges[index % ranges.length];
+}
+
+function isDemoItem(item = {}) {
+    const id = String(item?.id || item?.resourceId || item?.resource_id || "");
+    return item?.source === DEMO_SOURCE
+        || item?.isDemo === true
+        || id === DEMO_SUBJECT_ID
+        || id.startsWith("conv-demo-")
+        || id.startsWith("subject-conv-demo-")
+        || id.startsWith("draft-demo-")
+        || id.startsWith("task-demo-")
+        || id.startsWith("resource-demo-");
+}
+
+function displayItems(items = [], demoItems = []) {
+    const list = Array.isArray(items) ? items : [];
+    const realItems = list.filter((item) => !isDemoItem(item));
+    if (realItems.length > 0) return realItems;
+    return list.length > 0 ? list : demoItems;
+}
+
+function demoTimestamp(offsetDays = 0, time = "09:00") {
+    return `${localDateKey(offsetDays)}T${time}:00`;
+}
+
+function demoPlanningConversations() {
+    return [{
+        id: DEMO_PLANNING_ID,
+        title: DEMO_PLAN_THEME,
+        createdAt: demoTimestamp(-1, "09:00"),
+        updatedAt: demoTimestamp(0, "09:20"),
+        source: DEMO_SOURCE,
+        isDemo: true,
+    }];
+}
+
+function demoSubjectConversations() {
+    return [{
+        id: DEMO_SUBJECT_CONVERSATION_ID,
+        title: "范例：薄弱知识点诊断",
+        createdAt: demoTimestamp(-1, "20:00"),
+        updatedAt: demoTimestamp(0, "20:20"),
+        source: DEMO_SOURCE,
+        isDemo: true,
+    }];
+}
+
+function demoPlanningMessages() {
+    return [
+        {
+            id: "msg-demo-planning-user-goal",
+            role: "user",
+            content: DEMO_GOAL,
+        },
+        {
+            id: "msg-demo-planning-assistant-breakdown",
+            role: "assistant",
+            content: "可以拆成五个环节：先梳理监督学习核心概念，再复习线性回归与逻辑回归；中段完成模型评估指标对比表；最后用一套往年题检验掌握度，并把错题与薄弱点整理成复习总结。",
+        },
+        {
+            id: "msg-demo-planning-user-weakness",
+            role: "user",
+            content: "我对 precision、recall、F1 和 ROC-AUC 的适用场景容易混淆，神经网络反向传播也只记得公式。",
+        },
+        {
+            id: "msg-demo-planning-assistant-plan",
+            role: "assistant",
+            content: "我会把模型评估单独安排成对比表任务，并把神经网络基础放在轻量回顾时段。每个任务都保留可交付成果，方便你在任务安排和学习日程里直接开始计时。",
+        },
+    ];
+}
+
+function demoSubjectMessages() {
+    return [
+        {
+            id: "msg-demo-subject-user",
+            role: "user",
+            content: "我已经看完监督学习讲义，但还不能判断不同评估指标该怎么选。",
+        },
+        {
+            id: "msg-demo-subject-assistant",
+            role: "assistant",
+            content: "建议从分类任务目标出发：类别不均衡时优先看 precision、recall 和 F1；需要比较排序能力时看 ROC-AUC；如果考试要求解释业务代价，可以补充混淆矩阵说明。",
+        },
+    ];
+}
+
+function demoPlanningDrafts(conversationId = DEMO_PLANNING_ID) {
+    const subject = DEMO_SUBJECT_NAME;
+    return [
+        {
+            id: "draft-demo-supervised-concepts",
+            conversationId,
+            title: "范例：整理监督学习核心概念",
+            date: localDateKey(0),
+            start: "09:00",
+            end: "10:30",
+            subject,
+            time: `${localDateKey(0)} 09:00-10:30`,
+            description: "梳理特征、标签、训练集、验证集、泛化误差、过拟合与正则化，输出一页复习提纲。",
+            status: "draft",
+            source: DEMO_SOURCE,
+            isDemo: true,
+        },
+        {
+            id: "draft-demo-regression-review",
+            conversationId,
+            title: "范例：复习线性回归与逻辑回归",
+            date: localDateKey(1),
+            start: "15:00",
+            end: "16:30",
+            subject,
+            time: `${localDateKey(1)} 15:00-16:30`,
+            description: "对比损失函数、决策边界、梯度下降和常见正则项，补齐推导与应用场景。",
+            status: "draft",
+            source: DEMO_SOURCE,
+            isDemo: true,
+        },
+        {
+            id: "draft-demo-metrics-table",
+            conversationId,
+            title: "范例：完成模型评估指标对比表",
+            date: localDateKey(2),
+            start: "20:00",
+            end: "21:00",
+            subject,
+            time: `${localDateKey(2)} 20:00-21:00`,
+            description: "制作 accuracy、precision、recall、F1、ROC-AUC 的适用场景、优缺点和考试例题对照表。",
+            status: "draft",
+            source: DEMO_SOURCE,
+            isDemo: true,
+        },
+        {
+            id: "draft-demo-past-paper",
+            conversationId,
+            title: "范例：做一套往年题",
+            date: localDateKey(3),
+            start: "14:30",
+            end: "16:30",
+            subject,
+            time: `${localDateKey(3)} 14:30-16:30`,
+            description: "按考试时间完成一套样题，标注不确定题目和需要回看讲义的位置。",
+            status: "draft",
+            source: DEMO_SOURCE,
+            isDemo: true,
+        },
+        {
+            id: "draft-demo-mistake-summary",
+            conversationId,
+            title: "范例：总结错题与薄弱点",
+            date: localDateKey(0),
+            start: "22:30",
+            end: "23:10",
+            subject,
+            time: `${localDateKey(0)} 22:30-23:10`,
+            description: "把往年题错因归类到概念、公式、建模和计算四类，并生成最后一轮复习清单。",
+            status: "draft",
+            source: DEMO_SOURCE,
+            isDemo: true,
+        },
+    ];
+}
+
+function demoLearningTasks() {
+    const subject = DEMO_SUBJECT_NAME;
+    return [
+        {
+            id: "task-demo-supervised-concepts",
+            title: "范例：整理监督学习核心概念",
+            subject,
+            date: localDateKey(0),
+            start: "09:00",
+            end: "10:30",
+            description: "输出一页监督学习概念提纲，标注容易混淆的定义。",
+            status: "doing",
+            priority: "high",
+            plannedDate: localDateKey(0),
+            startTime: "09:00",
+            endTime: "10:30",
+            source: DEMO_SOURCE,
+            isDemo: true,
+        },
+        {
+            id: "task-demo-regression-review",
+            title: "范例：复习线性回归与逻辑回归",
+            subject,
+            date: localDateKey(1),
+            start: "15:00",
+            end: "16:30",
+            description: "整理两类模型的目标函数、训练方式和考试高频问法。",
+            status: "pending",
+            priority: "high",
+            plannedDate: localDateKey(1),
+            startTime: "15:00",
+            endTime: "16:30",
+            source: DEMO_SOURCE,
+            isDemo: true,
+        },
+        {
+            id: "task-demo-metrics-table",
+            title: "范例：完成模型评估指标对比表",
+            subject,
+            date: localDateKey(2),
+            start: "20:00",
+            end: "21:00",
+            description: "用表格对比 accuracy、precision、recall、F1、ROC-AUC。",
+            status: "pending",
+            priority: "medium",
+            plannedDate: localDateKey(2),
+            startTime: "20:00",
+            endTime: "21:00",
+            source: DEMO_SOURCE,
+            isDemo: true,
+        },
+        {
+            id: "task-demo-past-paper",
+            title: "范例：做一套往年题",
+            subject,
+            date: localDateKey(3),
+            start: "14:30",
+            end: "16:30",
+            description: "模拟考试节奏完成样题，并记录不会的题型。",
+            status: "pending",
+            priority: "high",
+            plannedDate: localDateKey(3),
+            startTime: "14:30",
+            endTime: "16:30",
+            source: DEMO_SOURCE,
+            isDemo: true,
+        },
+        {
+            id: "task-demo-mistake-summary",
+            title: "范例：总结错题与薄弱点",
+            subject,
+            date: localDateKey(0),
+            start: "22:30",
+            end: "23:10",
+            description: "轻量复盘错题原因，形成最后一轮复习清单。",
+            status: "pending",
+            priority: "medium",
+            plannedDate: localDateKey(0),
+            startTime: "22:30",
+            endTime: "23:10",
+            source: DEMO_SOURCE,
+            isDemo: true,
+        },
+    ];
+}
+
+function demoSubjectResources() {
+    return [
+        {
+            id: "resource-demo-supervised-learning",
+            scope: "public",
+            title: "范例：课程讲义：监督学习基础",
+            resourceId: "resource-demo-supervised-learning",
+            chunkId: "lecture-01",
+            contentPreview: "监督学习的基本流程：数据划分、特征工程、模型训练、验证集调参与泛化误差评估。",
+            fileType: "PDF",
+            source: DEMO_SOURCE,
+            isDemo: true,
+        },
+        {
+            id: "resource-demo-metrics-note",
+            scope: "public",
+            title: "范例：笔记：模型评估指标",
+            resourceId: "resource-demo-metrics-note",
+            chunkId: "note-01",
+            contentPreview: "混淆矩阵、accuracy、precision、recall、F1 与 ROC-AUC 的选择逻辑和考试答题模板。",
+            fileType: "MD",
+            source: DEMO_SOURCE,
+            isDemo: true,
+        },
+        {
+            id: "resource-demo-past-paper",
+            scope: "public",
+            title: "范例：往年题：机器学习导论期末样题",
+            resourceId: "resource-demo-past-paper",
+            chunkId: "exam-01",
+            contentPreview: "包含监督学习、线性模型、模型评估和神经网络基础的综合样题。",
+            fileType: "PDF",
+            source: DEMO_SOURCE,
+            isDemo: true,
+        },
+        {
+            id: "resource-demo-neural-network-sheet",
+            scope: "public",
+            title: "范例：总结：神经网络基础速查表",
+            resourceId: "resource-demo-neural-network-sheet",
+            chunkId: "summary-01",
+            contentPreview: "前向传播、损失函数、反向传播、激活函数和过拟合控制的速查清单。",
+            fileType: "MD",
+            source: DEMO_SOURCE,
+            isDemo: true,
+        },
+    ];
+}
+
+function demoSubjectReviews() {
+    return [{
+        id: "review-demo-ml-final",
+        original: "范例：模型评估指标容易混淆，尤其是不平衡分类场景下 precision 与 recall 的取舍。",
+        harvest: "范例：用业务目标判断指标，先看漏报/误报代价，再选择 F1、ROC-AUC 或混淆矩阵解释。",
+        status: "confirmed",
+        conversationId: DEMO_SUBJECT_CONVERSATION_ID,
+        source: DEMO_SOURCE,
+        isDemo: true,
+    }];
 }
 
 function dateFromValue(value) {
@@ -221,9 +538,9 @@ export default function FlowApp() {
     const [activeSubjectId, setActiveSubjectId] = useLocalState("flow.activeSubjectId", DEFAULT_SUBJECTS[0].id);
     const [freeConversations, setFreeConversations] = useLocalState("flow.freeConversations", []);
     const [subjectConversations, setSubjectConversations] = useLocalState("flow.subjectConversations", {});
-    const [planningConversations, setPlanningConversations] = useLocalState("flow.planningConversations", [makeConversation("规划对话")]);
+    const [planningConversations, setPlanningConversations] = useLocalState("flow.planningConversations", demoPlanningConversations());
     const [activeFreeId, setActiveFreeId] = useLocalState("flow.activeFreeId", "");
-    const [activePlanningId, setActivePlanningId] = useLocalState("flow.activePlanningId", "");
+    const [activePlanningId, setActivePlanningId] = useLocalState("flow.activePlanningId", DEMO_PLANNING_ID);
     const [activeSubjectConversationId, setActiveSubjectConversationId] = useLocalState("flow.activeSubjectConversationId", "");
     const [messages, setMessages] = useLocalState("flow.messages", {});
     const [draftsByConversation, setDraftsByConversation] = useLocalState("flow.draftsByConversation", {});
@@ -279,25 +596,44 @@ export default function FlowApp() {
         taskId: "",
         taskRemoteId: "",
         subjectId: "",
+        isDemoTask: false,
     });
     const [finishForm, setFinishForm] = useState({ status: "done", note: "" });
 
+    const displaySubjects = displayItems(subjects, DEFAULT_SUBJECTS);
+    const displayPlanningConversations = displayItems(planningConversations, demoPlanningConversations());
     const activeSubject = useMemo(
-        () => subjects.find((subject) => subject.id === activeSubjectId) || subjects[0] || DEFAULT_SUBJECTS[0],
-        [activeSubjectId, subjects],
+        () => displaySubjects.find((subject) => subject.id === activeSubjectId) || displaySubjects[0] || DEFAULT_SUBJECTS[0],
+        [activeSubjectId, displaySubjects],
     );
-    const activePlanningConversation = planningConversations.find((item) => item.id === activePlanningId) || planningConversations[0];
+    const activePlanningConversation = displayPlanningConversations.find((item) => item.id === activePlanningId) || displayPlanningConversations[0];
     const planningConversationId = activePlanningConversation?.id || "";
-    const currentDrafts = draftsByConversation[planningConversationId] || [];
-    const currentSubjectConversations = subjectConversations[activeSubject?.id] || [];
-    const currentSubjectResources = subjectResources[activeSubject?.id] || [];
-    const currentReviews = subjectReviews[activeSubject?.id] || [];
+    const storedDrafts = draftsByConversation[planningConversationId] || [];
+    const currentDrafts = isDemoItem(activePlanningConversation)
+        ? displayItems(storedDrafts, demoPlanningDrafts(planningConversationId))
+        : storedDrafts;
+    const storedSubjectConversations = subjectConversations[activeSubject?.id] || [];
+    const currentSubjectConversations = isDemoItem(activeSubject)
+        ? displayItems(storedSubjectConversations, demoSubjectConversations())
+        : storedSubjectConversations;
+    const storedSubjectResources = subjectResources[activeSubject?.id] || [];
+    const currentSubjectResources = isDemoItem(activeSubject)
+        ? displayItems(storedSubjectResources, demoSubjectResources())
+        : storedSubjectResources;
+    const storedReviews = subjectReviews[activeSubject?.id] || [];
+    const currentReviews = isDemoItem(activeSubject)
+        ? displayItems(storedReviews, demoSubjectReviews())
+        : storedReviews;
+    const displayTasks = displayItems(tasks, demoLearningTasks());
     const freeConversation = freeConversations.find((item) => item.id === activeFreeId);
     const subjectConversation = currentSubjectConversations.find((item) => item.id === activeSubjectConversationId);
     const chatKey = view === "free-chat"
         ? `free:${activeFreeId || "new"}`
         : `subject:${activeSubjectConversationId || activeSubject?.id}`;
-    const visibleMessages = messages[chatKey] || [];
+    const visibleMessages = messages[chatKey]
+        || (isDemoItem(subjectConversation) ? demoSubjectMessages() : []);
+    const planningMessages = messages[`planning:${planningConversationId}`]
+        || (isDemoItem(activePlanningConversation) ? demoPlanningMessages() : []);
 
     useEffect(() => {
         setFreeConversations((prev) => prev.filter((conversation) => (
@@ -328,20 +664,18 @@ export default function FlowApp() {
         setSubjects((prev) => {
             let changed = false;
             const next = prev.map((subject) => {
-                if (subject.id === "subject-vision" || subject.name === "视力学") {
+                if (subject.id === "subject-vision" || subject.name === "视力学" || subject.name === "示例学科" || isDemoItem(subject)) {
                     changed = true;
                     return {
-                        ...subject,
-                        id: subject.id === "subject-vision" ? "subject-demo" : subject.id,
-                        name: "示例学科",
-                        instruction: subject.instruction?.replaceAll?.("视力学", "示例学科") || DEFAULT_SUBJECTS[0].instruction,
+                        ...DEFAULT_SUBJECTS[0],
+                        id: DEMO_SUBJECT_ID,
                     };
                 }
                 return subject;
             });
             return changed ? next : prev;
         });
-        if (activeSubjectId === "subject-vision") setActiveSubjectId("subject-demo");
+        if (activeSubjectId === "subject-vision") setActiveSubjectId(DEMO_SUBJECT_ID);
     }, [activeSubjectId, setActiveSubjectId, setSubjects]);
 
     useEffect(() => {
@@ -1034,6 +1368,7 @@ export default function FlowApp() {
     }
 
     function confirmDraft(draft) {
+        const fromDemo = isDemoItem(draft);
         const task = {
             id: `task-${uid()}`,
             title: draft.title,
@@ -1043,9 +1378,10 @@ export default function FlowApp() {
             end: draft.end || "20:00",
             description: draft.description,
             status: "pending",
+            source: fromDemo ? "manual" : "planning-draft",
         };
         setTasks((prev) => [task, ...prev]);
-        if (currentUser?.id) {
+        if (currentUser?.id && !fromDemo) {
             const subject = subjects.find((item) => item.name === task.subject);
             createLearningTask({
                 ...task,
@@ -1160,6 +1496,7 @@ export default function FlowApp() {
             taskId: task?.id || "",
             taskRemoteId: task?.remoteId || "",
             subjectId: task?.subjectId || activeSubject.id,
+            isDemoTask: isDemoItem(task),
         });
         setFinishForm({ status: "done", note: "" });
         setModal("timer");
@@ -1174,6 +1511,7 @@ export default function FlowApp() {
             taskTitle: prev.taskTitle || "当前学习",
             subject: prev.subject || activeSubject.name,
             subjectId: prev.subjectId || activeSubject.id,
+            isDemoTask: false,
         }));
         setModal("timer");
     }
@@ -1224,7 +1562,7 @@ export default function FlowApp() {
             ...prev,
             [activeSubject.id]: [item, ...(prev[activeSubject.id] || [])],
         }));
-        if (currentUser?.id && activeSubject?.id && !String(activeSubject.id).startsWith("subject-")) {
+        if (!isDemoItem(resource) && currentUser?.id && activeSubject?.id && !String(activeSubject.id).startsWith("subject-")) {
             addSubjectResourceRecord(activeSubject.id, item, { userId: currentUser.id })
                 .then((saved) => {
                     setSubjectResources((prev) => ({
@@ -1261,7 +1599,7 @@ export default function FlowApp() {
                 task.id === timer.taskId ? { ...task, status: taskStatus, done: taskStatus === "done" } : task
             )));
         }
-        if (currentUser?.id) {
+        if (currentUser?.id && !timer.isDemoTask) {
             const subject = subjects.find((item) => item.id === timer.subjectId || item.name === timer.subject);
             const session = {
                 clientId: `session-${uid()}`,
@@ -1319,7 +1657,7 @@ export default function FlowApp() {
             <Sidebar
                 view={view}
                 setView={setView}
-                subjects={subjects}
+                subjects={displaySubjects}
                 activeSubjectId={activeSubjectId}
                 openSubject={openSubject}
                 freeConversations={freeConversations}
@@ -1338,7 +1676,7 @@ export default function FlowApp() {
                     <PlanView
                         planTab={planTab}
                         setPlanTab={setPlanTab}
-                        conversations={planningConversations}
+                        conversations={displayPlanningConversations}
                         activeId={planningConversationId}
                         setActiveId={setActivePlanningId}
                         newConversation={newPlanningConversation}
@@ -1350,12 +1688,12 @@ export default function FlowApp() {
                         input={input}
                         setInput={setInput}
                         sendPlanningMessage={sendPlanningMessage}
-                        messages={messages[`planning:${planningConversationId}`] || []}
+                        messages={planningMessages}
                         taskForm={taskForm}
                         setTaskForm={setTaskForm}
                         saveTask={saveTask}
-                        tasks={tasks}
-                        subjects={subjects}
+                        tasks={displayTasks}
+                        subjects={displaySubjects}
                         startTimer={startTimer}
                         createSubject={createSubjectQuick}
                         aiStatus={aiStatus}
@@ -1504,7 +1842,7 @@ export default function FlowApp() {
             />
             <ActionDialog
                 dialog={actionDialog}
-                subjects={subjects}
+                subjects={displaySubjects}
                 close={() => setActionDialog(null)}
                 openRenameDialog={setRenameDialog}
                 onDeleteSubject={(subjectId) => {

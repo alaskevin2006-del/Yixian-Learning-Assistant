@@ -70,6 +70,11 @@ function matchesResource(item, query, mode) {
     return getSmartTerms(trimmed).some((term) => haystack.includes(term));
 }
 
+function displayResources(resources = []) {
+    const realResources = (resources || []).filter((item) => item?.source !== "demo" && !item?.isDemo);
+    return realResources.length > 0 ? realResources : resources;
+}
+
 function emptyMessage(label, hasAnyResources, isSearching) {
     if (isSearching) return `没有找到匹配的${label}资料`;
     return hasAnyResources ? `暂无${label}资料` : `暂无${label}资料，请上传资料后再检索`;
@@ -78,13 +83,21 @@ function emptyMessage(label, hasAnyResources, isSearching) {
 export function LibraryView({ query, setQuery, publicResources, privateResources, uploadPrivate, openPublicUpload, openPrivateResource, openPublicResource, downloadPublicResource, referencePublicResource }) {
     const [searchMode, setSearchMode] = useState("keyword");
     const searchActive = String(query || "").trim().length > 0;
+    const displayPublicResources = useMemo(
+        () => displayResources(publicResources),
+        [publicResources],
+    );
+    const displayPrivateResources = useMemo(
+        () => displayResources(privateResources),
+        [privateResources],
+    );
     const filteredPublicResources = useMemo(
-        () => (publicResources || []).filter((item) => matchesResource(item, query, searchMode)),
-        [publicResources, query, searchMode],
+        () => (displayPublicResources || []).filter((item) => matchesResource(item, query, searchMode)),
+        [displayPublicResources, query, searchMode],
     );
     const filteredPrivateResources = useMemo(
-        () => (privateResources || []).filter((item) => matchesResource(item, query, searchMode)),
-        [privateResources, query, searchMode],
+        () => (displayPrivateResources || []).filter((item) => matchesResource(item, query, searchMode)),
+        [displayPrivateResources, query, searchMode],
     );
 
     return (
@@ -110,7 +123,7 @@ export function LibraryView({ query, setQuery, publicResources, privateResources
                                 <div className="file-actions"><button className="mini-btn" onClick={() => openPublicResource(item)}>打开</button><button className="mini-btn" disabled={item.canReference === false} onClick={() => referencePublicResource(item)}>引用</button><button className="mini-btn" onClick={() => downloadPublicResource(item)}>下载</button></div>
                             </div>
                         ))}
-                        {filteredPublicResources.length === 0 && <div className="empty-state">{emptyMessage("公共", (publicResources || []).length > 0, searchActive)}</div>}
+                        {filteredPublicResources.length === 0 && <div className="empty-state">{emptyMessage("公共", (displayPublicResources || []).length > 0, searchActive)}</div>}
                     </div>
                     <div className="card">
                         <h3>私有资料</h3>
@@ -127,7 +140,7 @@ export function LibraryView({ query, setQuery, publicResources, privateResources
                                 </div>
                             </div>
                         ))}
-                        {filteredPrivateResources.length === 0 && <div className="empty-state">{emptyMessage("私有", (privateResources || []).length > 0, searchActive)}</div>}
+                        {filteredPrivateResources.length === 0 && <div className="empty-state">{emptyMessage("私有", (displayPrivateResources || []).length > 0, searchActive)}</div>}
                     </div>
                 </div>
             </div>
