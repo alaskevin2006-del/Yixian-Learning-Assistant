@@ -2,12 +2,108 @@ import { Fragment, useState } from "react";
 import { Composer, MessageBubble } from "../../components/common/ChatPrimitives";
 import { filterTasksForPanel } from "./taskFilters";
 
-const scheduleViewOptions = [
-    { key: "morning", label: "上午" },
-    { key: "afternoon", label: "下午" },
-    { key: "full", label: "全天" },
+const scheduleTimeBandOptions = [
+    { key: "night", label: "22:00-05:00", startHour: 22, endHour: 5 },
+    { key: "day", label: "06:00-13:00", startHour: 6, endHour: 13 },
+    { key: "evening", label: "14:00-21:00", startHour: 14, endHour: 21 },
 ];
+const DEFAULT_SCHEDULE_TIME_BAND = "day";
 const RECENT_ITEM_LIMIT = 2;
+
+function localDateKey(date) {
+    const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+    return local.toISOString().slice(0, 10);
+}
+
+function hourIsInBand(hour, band) {
+    if (band.startHour <= band.endHour) {
+        return hour >= band.startHour && hour <= band.endHour;
+    }
+    return hour >= band.startHour || hour <= band.endHour;
+}
+
+function hoursForScheduleBand(hours, bandKey) {
+    const band = scheduleTimeBandOptions.find((option) => option.key === bandKey)
+        || scheduleTimeBandOptions.find((option) => option.key === DEFAULT_SCHEDULE_TIME_BAND);
+    if (band.startHour <= band.endHour) {
+        return hours.filter((hour) => hourIsInBand(hour, band));
+    }
+    return [
+        ...hours.filter((hour) => hour >= band.startHour),
+        ...hours.filter((hour) => hour <= band.endHour),
+    ];
+}
+
+function scheduleBandForHour(hour) {
+    return scheduleTimeBandOptions.find((band) => hourIsInBand(hour, band))?.key || DEFAULT_SCHEDULE_TIME_BAND;
+}
+
+function taskScheduleDate(task) {
+    const value = task?.date
+        || task?.plannedDate
+        || task?.planned_date
+        || task?.plannedStart
+        || task?.planned_start
+        || "";
+    const text = String(value).trim();
+    return /^\d{4}-\d{2}-\d{2}/.test(text) ? text.slice(0, 10) : "";
+}
+
+function parseScheduleTime(value) {
+    const match = String(value || "").trim().match(/(?:T|\b)([01]?\d|2[0-3]):([0-5]\d)/);
+    if (!match) return null;
+    return {
+        hour: Number(match[1]),
+        minute: Number(match[2]),
+    };
+}
+
+function taskScheduleStart(task) {
+    return parseScheduleTime(
+        task?.start
+        || task?.startTime
+        || task?.start_time
+        || task?.time
+        || task?.plannedStart
+        || task?.planned_start
+        || "",
+    );
+}
+
+function taskSchedulePoint(task) {
+    const dateKey = taskScheduleDate(task);
+    const start = taskScheduleStart(task);
+    if (!dateKey || !start) return null;
+    const hour = String(start.hour).padStart(2, "0");
+    const minute = String(start.minute).padStart(2, "0");
+    const timestamp = Date.parse(`${dateKey}T${hour}:${minute}:00`);
+    if (Number.isNaN(timestamp)) return null;
+    return { dateKey, hour: start.hour, timestamp };
+}
+
+function defaultScheduleTimeBand(tasks, now = new Date()) {
+    const todayKey = localDateKey(now);
+    const monday = new Date(now);
+    const mondayOffset = (monday.getDay() || 7) - 1;
+    monday.setHours(0, 0, 0, 0);
+    monday.setDate(monday.getDate() - mondayOffset);
+    const weekDateKeys = new Set(Array.from({ length: 7 }, (_, index) => {
+        const date = new Date(monday);
+        date.setDate(monday.getDate() + index);
+        return localDateKey(date);
+    }));
+    const schedulePoints = (tasks || [])
+        .map(taskSchedulePoint)
+        .filter((point) => point && weekDateKeys.has(point.dateKey));
+    const todayPoints = schedulePoints.filter((point) => point.dateKey === todayKey);
+    const candidates = todayPoints.length > 0 ? todayPoints : schedulePoints;
+    if (candidates.length === 0) return DEFAULT_SCHEDULE_TIME_BAND;
+    const nowTime = now.getTime();
+    const nearest = candidates
+        .slice()
+        .sort((left, right) => Math.abs(left.timestamp - nowTime) - Math.abs(right.timestamp - nowTime))[0];
+    return scheduleBandForHour(nearest.hour);
+}
 
 function timeValue(value) {
     if (!value) return 0;
@@ -161,6 +257,9 @@ function TasksPanel({ form, setForm, saveTask, tasks, subjects, startTimer, crea
         query: taskQuery,
         level: taskLevel,
     });
+    const recentTasks = taskView === "all" ? recentItems(visibleTasks) : [];
+    const recentTaskIds = new Set(recentTasks.map((task) => task.id));
+    const listedTasks = taskView === "all" ? visibleTasks.filter((task) => !recentTaskIds.has(task.id)) : visibleTasks;
     const viewTitle = taskView === "new"
         ? "新建任务"
         : taskView === "all"
@@ -217,27 +316,43 @@ function TasksPanel({ form, setForm, saveTask, tasks, subjects, startTimer, crea
                         <div className="align-end"><button className="primary-btn" onClick={saveTask}>保存任务</button></div>
                     </div>
                 </div>}
-                <div className="task-list">
-                    <div className="task-list-head">
-                        <h2>{taskView === "new" ? "最近任务" : viewTitle}</h2>
-                        <span className="muted">{visibleTasks.length} 个任务</span>
-                    </div>
-                    <div className="task-search-panel">
-                        <input value={taskQuery} onChange={(event) => setTaskQuery(event.target.value)} placeholder="检索任务、学科或说明" />
-                        <select className="form-control" value={taskLevel} onChange={(event) => setTaskLevel(event.target.value)}>
-                            <option value="all">全部层级</option>
-                            <option value="with-subject">已归入学科</option>
-                            <option value="uncategorized">待归档</option>
-                        </select>
-                    </div>
-                    {visibleTasks.map((task) => (
-                        <div className="list-row" key={task.id}>
-                            <div><strong>{task.title}</strong><div className="muted">{task.subject || "待归档"} · {task.date} {task.start}-{task.end}</div></div>
-                            <button className="mini-btn" onClick={() => startTimer(task)}>开始</button>
+                {taskView !== "new" && (
+                    <div className="task-list">
+                        <div className="task-list-head">
+                            <h2>{viewTitle}</h2>
+                            <span className="muted">{visibleTasks.length} 个任务</span>
                         </div>
-                    ))}
-                    {visibleTasks.length === 0 && <div className="empty-state">暂无任务</div>}
-                </div>
+                        <div className="task-search-panel">
+                            <input value={taskQuery} onChange={(event) => setTaskQuery(event.target.value)} placeholder="检索任务、学科或说明" />
+                            <select className="form-control" value={taskLevel} onChange={(event) => setTaskLevel(event.target.value)}>
+                                <option value="all">全部层级</option>
+                                <option value="with-subject">已归入学科</option>
+                                <option value="uncategorized">待归档</option>
+                            </select>
+                        </div>
+                        {taskView === "all" && recentTasks.length > 0 && (
+                            <div className="recent-task-panel">
+                                <div className="task-list-subhead">
+                                    <h3>最近任务</h3>
+                                    <span className="muted">{recentTasks.length} 个任务</span>
+                                </div>
+                                {recentTasks.map((task) => (
+                                    <div className="list-row" key={task.id}>
+                                        <div><strong>{task.title}</strong><div className="muted">{task.subject || "待归档"} · {task.date} {task.start}-{task.end}</div></div>
+                                        <button className="mini-btn" onClick={() => startTimer(task)}>开始</button>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                        {listedTasks.map((task) => (
+                            <div className="list-row" key={task.id}>
+                                <div><strong>{task.title}</strong><div className="muted">{task.subject || "待归档"} · {task.date} {task.start}-{task.end}</div></div>
+                                <button className="mini-btn" onClick={() => startTimer(task)}>开始</button>
+                            </div>
+                        ))}
+                        {visibleTasks.length === 0 && <div className="empty-state">暂无任务</div>}
+                    </div>
+                )}
             </div>
         </div>
     );
@@ -247,13 +362,11 @@ function TasksPanel({ form, setForm, saveTask, tasks, subjects, startTimer, crea
 
 function ScheduleView({ tasks }) {
     const [weekOffset, setWeekOffset] = useState(0);
-    const [scheduleViewMode, setScheduleViewMode] = useState("full");
+    const [selectedScheduleTimeBand, setSelectedScheduleTimeBand] = useState(DEFAULT_SCHEDULE_TIME_BAND);
+    const [useDefaultScheduleBand, setUseDefaultScheduleBand] = useState(true);
     const hours = Array.from({ length: 24 }, (_, index) => index);
-    const visibleHours = scheduleViewMode === "morning"
-        ? hours.filter((hour) => hour <= 12)
-        : scheduleViewMode === "afternoon"
-            ? hours.filter((hour) => hour >= 13)
-            : hours;
+    const scheduleTimeBand = useDefaultScheduleBand ? defaultScheduleTimeBand(tasks) : selectedScheduleTimeBand;
+    const visibleHours = hoursForScheduleBand(hours, scheduleTimeBand);
     const today = new Date();
     const weekDays = Array.from({ length: 7 }, (_, index) => {
         const date = new Date(today);
@@ -262,10 +375,7 @@ function ScheduleView({ tasks }) {
         date.setDate(date.getDate() - mondayOffset + index + weekOffset * 7);
         return date;
     });
-    const toDateKey = (day) => {
-        const local = new Date(day.getTime() - day.getTimezoneOffset() * 60000);
-        return local.toISOString().slice(0, 10);
-    };
+    const toDateKey = (day) => localDateKey(day);
     const weekLabel = weekOffset === 0 ? "本周" : weekOffset < 0 ? `${Math.abs(weekOffset)}周前` : `${weekOffset}周后`;
 
     return (
@@ -279,13 +389,16 @@ function ScheduleView({ tasks }) {
                 <div className="calendar-hint">
                     <span>点击日程卡片可查看详情、开始学习或调整时间。</span>
                     <div className="schedule-view-switcher" aria-label="切换日程显示范围">
-                        {scheduleViewOptions.map((option) => (
+                        {scheduleTimeBandOptions.map((option) => (
                             <button
-                                className={`schedule-view-option ${scheduleViewMode === option.key ? "active" : ""}`}
+                                className={`schedule-view-option ${scheduleTimeBand === option.key ? "active" : ""}`}
                                 key={option.key}
-                                onClick={() => setScheduleViewMode(option.key)}
+                                onClick={() => {
+                                    setUseDefaultScheduleBand(false);
+                                    setSelectedScheduleTimeBand(option.key);
+                                }}
                                 type="button"
-                                aria-pressed={scheduleViewMode === option.key}
+                                aria-pressed={scheduleTimeBand === option.key}
                             >
                                 {option.label}
                             </button>
@@ -306,7 +419,7 @@ function ScheduleView({ tasks }) {
                             <div className="time-label" key={`time-${hour}`}>{String(hour).padStart(2, "0")}:00</div>
                             {weekDays.map((day) => {
                                 const dateKey = toDateKey(day);
-                                const items = tasks.filter((task) => task.date === dateKey && Number(String(task.start || "19:00").slice(0, 2)) === hour);
+                                const items = tasks.filter((task) => taskScheduleDate(task) === dateKey && (taskScheduleStart(task)?.hour ?? 19) === hour);
                                 return (
                                 <div className="hour-cell" key={`${dateKey}-${hour}`}>
                                     {items.map((task) => <button className="schedule-task" key={task.id}>{task.title}</button>)}
