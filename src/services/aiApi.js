@@ -45,7 +45,10 @@ async function getCurrentAccessToken() {
         throw new Error(supabaseConfigError || "Supabase 未初始化");
     }
     const { data: { session } = {} } = await supabase.auth.getSession();
-    return session?.access_token || requireEnv("VITE_SUPABASE_ANON_KEY");
+    if (!session?.access_token) {
+        throw new Error("请先登录后再使用 AI 对话。");
+    }
+    return session.access_token;
 }
 
 export async function chatWithAI({

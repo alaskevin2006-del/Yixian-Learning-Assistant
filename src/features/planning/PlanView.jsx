@@ -11,12 +11,19 @@ export function PlanView({
     drafts,
     confirmDraft,
     deleteDraft,
+    openTaskDetail,
     deleteConversation,
     openRenameDialog,
     input,
     setInput,
     sendPlanningMessage,
     messages,
+    openSource,
+    selectedReferences,
+    webEnabled,
+    setWebEnabled,
+    uploadAttachment,
+    attachmentCount,
     taskForm,
     setTaskForm,
     saveTask,
@@ -71,7 +78,7 @@ export function PlanView({
                                                     <div className="draft-desc">{draft.description}</div>
                                                     <div className="draft-actions">
                                                         <button className="mini-btn" disabled={draft.status === "confirmed"} onClick={() => confirmDraft(draft)}>{draft.status === "confirmed" ? "已加入日程" : "确认加入日程"}</button>
-                                                        <button className="mini-btn">查看详情</button>
+                                                        <button className="mini-btn" onClick={() => openTaskDetail(draft)}>查看详情</button>
                                                         <button className="mini-btn" onClick={() => deleteDraft(draft)}>删除</button>
                                                     </div>
                                                 </div>
@@ -89,12 +96,12 @@ export function PlanView({
                                 {aiStatus === "loading" && <div className="muted">AI 正在整理规划...</div>}
                                 {aiError && <div className="error-text">{aiError}</div>}
                             </div>
-                            <Composer value={input} setValue={setInput} onSend={sendPlanningMessage} placeholder="发学习目标、错题、卡点、考试时间或本周可用时间" disabled={aiStatus === "loading"} />
+                            <Composer value={input} setValue={setInput} onSend={sendPlanningMessage} placeholder="发学习目标、错题、卡点、考试时间或本周可用时间" openSource={openSource} webEnabled={webEnabled} onToggleWeb={() => setWebEnabled((value) => !value)} referenceCount={selectedReferences.length} uploadAttachment={uploadAttachment} attachmentCount={attachmentCount} disabled={aiStatus === "loading"} />
                         </div>
                     </div>
                 )}
-                {planTab === "tasks" && <TasksPanel form={taskForm} setForm={setTaskForm} saveTask={saveTask} tasks={tasks} subjects={subjects} startTimer={startTimer} createSubject={createSubject} />}
-                {planTab === "schedule" && <ScheduleView tasks={tasks} />}
+                {planTab === "tasks" && <TasksPanel form={taskForm} setForm={setTaskForm} saveTask={saveTask} tasks={tasks} subjects={subjects} startTimer={startTimer} createSubject={createSubject} openTaskDetail={openTaskDetail} />}
+                {planTab === "schedule" && <ScheduleView tasks={tasks} openTaskDetail={openTaskDetail} />}
             </div>
         </section>
     );
@@ -102,7 +109,7 @@ export function PlanView({
 
 
 
-function TasksPanel({ form, setForm, saveTask, tasks, subjects, startTimer, createSubject }) {
+function TasksPanel({ form, setForm, saveTask, tasks, subjects, startTimer, createSubject, openTaskDetail }) {
     const [taskView, setTaskView] = useState("new");
     const [newSubjectName, setNewSubjectName] = useState("");
     const activeSubjectFilter = taskView.startsWith("subject:") ? taskView.slice("subject:".length) : "";
@@ -177,7 +184,10 @@ function TasksPanel({ form, setForm, saveTask, tasks, subjects, startTimer, crea
                     {visibleTasks.map((task) => (
                         <div className="list-row" key={task.id}>
                             <div><strong>{task.title}</strong><div className="muted">{task.subject || "待归档"} · {task.date} {task.start}-{task.end}</div></div>
-                            <button className="mini-btn" onClick={() => startTimer(task)}>开始</button>
+                            <div className="button-row">
+                                <button className="mini-btn" onClick={() => openTaskDetail(task)}>详情</button>
+                                <button className="mini-btn" onClick={() => startTimer(task)}>开始</button>
+                            </div>
                         </div>
                     ))}
                     {visibleTasks.length === 0 && <div className="empty-state">暂无任务</div>}
@@ -189,9 +199,10 @@ function TasksPanel({ form, setForm, saveTask, tasks, subjects, startTimer, crea
 
 
 
-function ScheduleView({ tasks }) {
+function ScheduleView({ tasks, openTaskDetail }) {
     const [weekOffset, setWeekOffset] = useState(0);
-    const hours = Array.from({ length: 17 }, (_, index) => index + 7);
+    const [showFullDay, setShowFullDay] = useState(false);
+    const hours = Array.from({ length: showFullDay ? 24 : 17 }, (_, index) => index + (showFullDay ? 0 : 7));
     const today = new Date();
     const weekDays = Array.from({ length: 7 }, (_, index) => {
         const date = new Date(today);
@@ -216,7 +227,7 @@ function ScheduleView({ tasks }) {
             <div className="calendar-card">
                 <div className="calendar-hint">
                     <span>点击日程卡片可查看详情、开始学习或调整时间。</span>
-                    <button className="plain-btn">查看全天 24 小时</button>
+                    <button className="plain-btn" onClick={() => setShowFullDay((value) => !value)}>{showFullDay ? "收起夜间时段" : "查看全天 24 小时"}</button>
                 </div>
                 <div className="week-head">
                     <div />
@@ -235,7 +246,7 @@ function ScheduleView({ tasks }) {
                                 const items = tasks.filter((task) => task.date === dateKey && Number(String(task.start || "19:00").slice(0, 2)) === hour);
                                 return (
                                 <div className="hour-cell" key={`${dateKey}-${hour}`}>
-                                    {items.map((task) => <button className="schedule-task" key={task.id}>{task.title}</button>)}
+                                    {items.map((task) => <button className="schedule-task" key={task.id} onClick={() => openTaskDetail(task)}>{task.title}</button>)}
                                 </div>
                                 );
                             })}

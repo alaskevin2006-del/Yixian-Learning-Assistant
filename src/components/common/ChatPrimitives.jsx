@@ -1,18 +1,31 @@
+import { useRef } from "react";
 import { AIMessage } from "../MarkdownMessage";
 
-export function Composer({ value, setValue, onSend, placeholder, openSource, webEnabled, onToggleWeb, referenceCount = 0, disabled = false }) {
+export function Composer({
+    value,
+    setValue,
+    onSend,
+    placeholder,
+    openSource,
+    webEnabled,
+    onToggleWeb,
+    referenceCount = 0,
+    uploadAttachment,
+    attachmentCount = 0,
+    disabled = false,
+}) {
+    const fileInputRef = useRef(null);
     return (
         <div className="composer">
-            <button className="plus-btn">+</button>
+            <button className={`plus-btn ${attachmentCount ? "active-soft" : ""}`} type="button" onClick={() => fileInputRef.current?.click()}>+</button>
+            {uploadAttachment && <input ref={fileInputRef} type="file" hidden accept=".txt,.md,.pdf,.docx,.ppt,.pptx" onChange={uploadAttachment} />}
             <input value={value} onChange={(event) => setValue(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !disabled) onSend(); }} placeholder={placeholder} disabled={disabled} />
-            <button className={`plain-btn ${webEnabled ? "active-soft" : ""}`} onClick={onToggleWeb} type="button" disabled={!onToggleWeb && webEnabled}>联网</button>
+            <button className={`plain-btn ${webEnabled ? "active-soft" : ""}`} onClick={onToggleWeb} type="button" disabled={!onToggleWeb}>联网</button>
             {openSource && <button className={`plain-btn ${referenceCount ? "active-soft" : ""}`} onClick={openSource} type="button">引用{referenceCount ? ` ${referenceCount}` : ""}</button>}
             <button className="round-btn" onClick={onSend} disabled={disabled || !value.trim()}>▶</button>
         </div>
     );
 }
-
-
 
 export function MessageBubble({ message }) {
     return (
@@ -28,4 +41,3 @@ export function MessageBubble({ message }) {
         </div>
     );
 }
-

@@ -1,3 +1,5 @@
+import { supabase, supabaseConfigError } from "./supabaseClient";
+
 const SEARCH_TOP_K = 8;
 const RETRIEVE_TOP_K = 5;
 
@@ -7,6 +9,17 @@ function requireEnv(name) {
         throw new Error(`缺少前端环境变量：${name}`);
     }
     return value;
+}
+
+async function getCurrentAccessToken() {
+    if (!supabase) {
+        throw new Error(supabaseConfigError || "Supabase 未初始化");
+    }
+    const { data: { session } = {} } = await supabase.auth.getSession();
+    if (!session?.access_token) {
+        throw new Error("请先登录后再使用资料库 AI 检索。");
+    }
+    return session.access_token;
 }
 
 function normalizeResult(result) {
@@ -55,12 +68,13 @@ export async function searchResources(query, options = {}) {
 
     const supabaseUrl = requireEnv("VITE_SUPABASE_URL").replace(/\/$/, "");
     const anonKey = requireEnv("VITE_SUPABASE_ANON_KEY");
+    const accessToken = await getCurrentAccessToken();
     const response = await fetch(`${supabaseUrl}/functions/v1/search-resources`, {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
             apikey: anonKey,
-            Authorization: `Bearer ${anonKey}`,
+            Authorization: `Bearer ${accessToken}`,
         },
         body: JSON.stringify({
             query: trimmed,
@@ -105,12 +119,13 @@ export async function retrieveContext(query) {
     if (!trimmed && !hasReferences) return { contextText: "", citations: [] };
     const supabaseUrl = requireEnv("VITE_SUPABASE_URL").replace(/\/$/, "");
     const anonKey = requireEnv("VITE_SUPABASE_ANON_KEY");
+    const accessToken = await getCurrentAccessToken();
     const response = await fetch(`${supabaseUrl}/functions/v1/retrieve-context`, {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
             apikey: anonKey,
-            Authorization: `Bearer ${anonKey}`,
+            Authorization: `Bearer ${accessToken}`,
         },
         body: JSON.stringify({
             query: trimmed,

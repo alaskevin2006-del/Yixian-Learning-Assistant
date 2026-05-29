@@ -7,30 +7,6 @@ export function requireSupabase() {
     return supabase;
 }
 
-function readErrorStatus(error) {
-    const status = error?.status ?? error?.statusCode ?? error?.status_code;
-    return Number.isFinite(status) ? status : 0;
-}
-
-export function isSupabaseAuthError(error) {
-    const status = readErrorStatus(error);
-    const code = String(error?.code || "");
-    const message = String(error?.message || "");
-    if (status === 401 || status === 403) return true;
-    if (code === "PGRST301") return true;
-    return /jwt|not\s+authorized|permission\s+denied/i.test(message);
-}
-
-export function isSupabaseTableMissingError(error) {
-    const status = readErrorStatus(error);
-    const code = String(error?.code || "");
-    const message = String(error?.message || "");
-    const details = String(error?.details || "");
-    if (status === 404) return true;
-    if (code === "PGRST205" || code === "42P01") return true;
-    return /could not find the table|relation .* does not exist/i.test(`${message} ${details}`);
-}
-
 export async function getCurrentUserId(explicitUserId) {
     if (explicitUserId) return explicitUserId;
     const { data, error } = await requireSupabase().auth.getUser();

@@ -134,7 +134,7 @@ export function PublicUploadModal({ open, uploadJob, uploadPublicResource, close
 
 
 
-export function SourceModal({ open, query, setQuery, search, results, addResource, currentResources, selectedReferences, close }) {
+export function LegacySourceModal({ open, query, setQuery, search, results, addResource, currentResources, selectedReferences, close }) {
     if (!open) return null;
     return (
         <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
@@ -156,9 +156,74 @@ export function SourceModal({ open, query, setQuery, search, results, addResourc
     );
 }
 
+function sourceKey(item) {
+    return `${item?.scope || "public"}:${item?.resourceId || item?.id || ""}:${item?.chunkId || ""}`;
+}
+
+export function SourceModal({ open, query, setQuery, search, results, addResource, currentResources, selectedReferences, close }) {
+    if (!open) return null;
+    return <SourceModalContent query={query} setQuery={setQuery} search={search} results={results} addResource={addResource} currentResources={currentResources} selectedReferences={selectedReferences} close={close} />;
+}
+
+function SourceModalContent({ query, setQuery, search, results, addResource, currentResources, selectedReferences, close }) {
+    const [checkedKeys, setCheckedKeys] = useState(new Set());
+    const selectedKeys = new Set((selectedReferences || []).map(sourceKey));
+    const candidates = [...(currentResources || []), ...(results || [])];
+    const candidateMap = new Map(candidates.map((item) => [sourceKey(item), item]));
+
+    function toggle(item) {
+        const key = sourceKey(item);
+        setCheckedKeys((prev) => {
+            const next = new Set(prev);
+            if (next.has(key)) next.delete(key);
+            else next.add(key);
+            return next;
+        });
+    }
+
+    function addChecked() {
+        checkedKeys.forEach((key) => {
+            const item = candidateMap.get(key);
+            if (item) addResource(item);
+        });
+        close();
+    }
+
+    function renderSelectable(item) {
+        const key = sourceKey(item);
+        const alreadySelected = selectedKeys.has(key);
+        return (
+            <div className="select-row" key={key}>
+                <input type="checkbox" checked={alreadySelected || checkedKeys.has(key)} disabled={alreadySelected} onChange={() => toggle(item)} />
+                <span>{item.title}</span>
+                <button className="mini-btn" disabled={alreadySelected} onClick={() => addResource(item)}>{alreadySelected ? "已引用" : "引用"}</button>
+            </div>
+        );
+    }
+
+    return (
+        <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
+            <div className="modal">
+                <div className="modal-head"><span>引用资料库内容</span><button className="icon-btn" onClick={close}>×</button></div>
+                <div className="modal-body"><div className="modal-stack">
+                    <div className="search-bar"><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索可引用的资料" /><button className="plain-btn" onClick={search}>搜索</button></div>
+                    <div className="card">
+                        <h3>当前引用</h3>
+                        {(selectedReferences || []).map((item) => <div className="select-row" key={sourceKey(item)}><input type="checkbox" checked readOnly /><span>{item.title}</span><button className="mini-btn" disabled>已引用</button></div>)}
+                        {(selectedReferences || []).length === 0 && <div className="muted">暂无引用资料。</div>}
+                    </div>
+                    <div className="card"><h3>当前学科来源</h3>{(currentResources || []).map(renderSelectable)}{(!currentResources || currentResources.length === 0) && <div className="muted">暂无学科来源。</div>}</div>
+                    {(results || []).map(renderSelectable)}
+                    <div className="align-end"><button className="plain-btn" onClick={close}>取消</button><button className="primary-btn" disabled={checkedKeys.size === 0} onClick={addChecked}>引用选中资料</button></div>
+                </div></div>
+            </div>
+        </div>
+    );
+}
 
 
-export function TimerModal({ open, timer, setTimer, close, finish }) {
+
+export function LegacyTimerModal({ open, timer, setTimer, close, finish }) {
     if (!open) return null;
     return (
         <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
@@ -175,13 +240,70 @@ export function TimerModal({ open, timer, setTimer, close, finish }) {
     );
 }
 
+export function TimerModal({ open, timer, setTimer, close, finish }) {
+    if (!open) return null;
+    const isPomodoro = timer.mode === "pomodoro";
+    const phase = timer.pomodoroPhase || "focus";
+    const switchMode = (mode) => setTimer((prev) => ({
+        ...prev,
+        mode,
+        pomodoroPhase: mode === "pomodoro" ? prev.pomodoroPhase || "focus" : "",
+        startedAt: prev.running ? new Date().toISOString() : prev.startedAt,
+        elapsed: "00:00",
+    }));
+    const skipRest = () => setTimer((prev) => ({
+        ...prev,
+        pomodoroPhase: "focus",
+        startedAt: prev.running ? new Date().toISOString() : prev.startedAt,
+        elapsed: "00:00",
+    }));
+
+    return (
+        <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
+            <div className="modal">
+                <div className="modal-head"><span>当前学习计时</span><button className="icon-btn" onClick={close}>×</button></div>
+                <div className="modal-body"><div className="modal-stack">
+                    <div><h3>{timer.taskTitle || "当前任务"}</h3><div className="muted">绑定当前任务和当前对话，结束后回写实际学习时间。</div></div>
+                    <div className="timer-mode"><button className={!isPomodoro ? "active" : ""} onClick={() => switchMode("stopwatch")}>正计时</button><button className={isPomodoro ? "active" : ""} onClick={() => switchMode("pomodoro")}>番茄钟</button></div>
+                    <div className="timer-display"><span className="muted">{isPomodoro ? (phase === "rest" ? "休息中" : "专注中") : "本次学习已进行"}</span><strong>{timer.elapsed}</strong><span className="muted">{isPomodoro ? "番茄钟按专注/休息阶段记录，结束学习时仍会回写本次学习时长。" : "点击开始后持续累计，结束学习时记录本次时长。"}</span></div>
+                    <div className="button-row"><button className="primary-btn" onClick={() => setTimer((prev) => ({ ...prev, running: !prev.running, startedAt: prev.running ? prev.startedAt : new Date().toISOString() }))}>{timer.running ? "暂停" : "开始"}</button><button className="plain-btn" disabled={!isPomodoro || phase !== "rest"} onClick={skipRest}>跳过休息</button><button className="plain-btn" onClick={finish}>结束学习</button></div>
+                </div></div>
+            </div>
+        </div>
+    );
+}
 
 
-export function TaskDetailModal({ open, task, close }) {
+
+export function LegacyTaskDetailModal({ open, task, close }) {
     if (!open) return null;
     return (
         <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
             <div className="modal"><div className="modal-head"><span>任务详情</span><button className="icon-btn" onClick={close}>×</button></div><div className="modal-body"><div className="modal-stack"><div><h3>{task?.title || "当前任务"}</h3><div className="muted">{task?.date || "待排期"}</div></div><div className="card no-shadow"><h3>任务说明</h3><p className="muted">{task?.description || "这里展示任务目标、要求和备注。"}</p></div></div></div></div>
+        </div>
+    );
+}
+
+export function TaskDetailModal({ open, task, close, startTimer }) {
+    if (!open) return null;
+    return (
+        <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
+            <div className="modal">
+                <div className="modal-head"><span>任务详情</span><button className="icon-btn" onClick={close}>×</button></div>
+                <div className="modal-body">
+                    <div className="modal-stack">
+                        <div>
+                            <h3>{task?.title || "当前任务"}</h3>
+                            <div className="muted">{task?.date || task?.plannedDate || "待排期"} {task?.start || task?.startTime || ""}{task?.end || task?.endTime ? `-${task?.end || task?.endTime}` : ""}</div>
+                        </div>
+                        <div className="card no-shadow"><h3>任务说明</h3><p className="muted">{task?.description || "暂无任务说明。"}</p></div>
+                        <div className="button-row right">
+                            <button className="plain-btn" onClick={close}>关闭</button>
+                            <button className="primary-btn" onClick={() => startTimer?.(task)}>开始学习</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
     );
 }
