@@ -7,6 +7,44 @@ const scheduleViewOptions = [
     { key: "afternoon", label: "下午" },
     { key: "full", label: "全天" },
 ];
+const RECENT_ITEM_LIMIT = 2;
+
+function timeValue(value) {
+    if (!value) return 0;
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function timeValueFromId(id) {
+    const text = String(id || "");
+    const match = text.match(/(?:^|[-_])([0-9a-z]{6,})(?=[-_]|$)/i);
+    if (!match) return 0;
+    const parsed = Number.parseInt(match[1], 36);
+    return parsed > 946684800000 && parsed < 4102444800000 ? parsed : 0;
+}
+
+function itemTimelineValue(item) {
+    return timeValue(item?.updatedAt)
+        || timeValue(item?.updated_at)
+        || timeValue(item?.createdAt)
+        || timeValue(item?.created_at)
+        || timeValue(item?.timestamp)
+        || timeValue(item?.plannedStart)
+        || timeValue(item?.planned_start)
+        || timeValue(item?.plannedDate)
+        || timeValue(item?.planned_date)
+        || timeValue(item?.time)
+        || timeValue(item?.date && item?.start ? `${item.date}T${item.start}` : "")
+        || timeValue(item?.date)
+        || timeValueFromId(item?.id);
+}
+
+function recentItems(items) {
+    return (items || [])
+        .slice()
+        .sort((left, right) => itemTimelineValue(right) - itemTimelineValue(left))
+        .slice(0, RECENT_ITEM_LIMIT);
+}
 
 export function PlanView({
     planTab,
@@ -36,6 +74,8 @@ export function PlanView({
 }) {
     const [conversationsOpen, setConversationsOpen] = useState(true);
     const [draftsOpen, setDraftsOpen] = useState(true);
+    const visibleConversations = recentItems(conversations);
+    const visibleDrafts = recentItems(drafts);
     return (
         <section className="view" id="view-plan">
             <div className="plan-frame">
@@ -51,7 +91,7 @@ export function PlanView({
                                 <button className="rail-section-head" onClick={() => setConversationsOpen((value) => !value)}><span>规划对话</span><span className="chevron">{conversationsOpen ? "▾" : "▸"}</span></button>
                                 {conversationsOpen && <div className="rail-section-body">
                                     <button className="plain-btn" onClick={newConversation}>新建规划对话</button>
-                                    {conversations.map((conversation) => (
+                                    {visibleConversations.map((conversation) => (
                                         <div key={conversation.id} className={`rail-card rail-card-row ${conversation.id === activeId ? "active" : ""}`}>
                                             <button className="rail-card-main" onClick={() => setActiveId(conversation.id)}>
                                                 <strong>{conversation.title}</strong>
@@ -70,7 +110,7 @@ export function PlanView({
                                 {draftsOpen && <div className="rail-section-body">
                                     <div className="draft-area">
                                         <div className="draft-list">
-                                            {drafts.map((draft) => (
+                                            {visibleDrafts.map((draft) => (
                                                 <div className="draft-card" key={draft.id}>
                                                     <strong>{draft.title}</strong>
                                                     <div className="draft-time">{draft.date || "待排期"} {draft.start || ""}{draft.end ? `-${draft.end}` : ""}</div>
