@@ -1,4 +1,4 @@
-import { supabase } from "./supabaseClient";
+import { compactObject, getCurrentUserId, requireSupabase } from "./coreDataApi";
 
 const TABLES = {
     tasks: "learning_tasks",
@@ -119,21 +119,7 @@ const TABLE_FIELDS = {
     ]),
 };
 
-function requireSupabase() {
-    if (!supabase) {
-        throw new Error("Supabase is not configured. Please set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.");
-    }
-    return supabase;
-}
-
-async function getUserId(explicitUserId) {
-    if (explicitUserId) return explicitUserId;
-    const client = requireSupabase();
-    const { data, error } = await client.auth.getUser();
-    if (error) throw error;
-    if (!data?.user?.id) throw new Error("Please sign in before syncing learning data.");
-    return data.user.id;
-}
+const UUID_FIELDS = new Set(["task_id", "subject_id", "draft_id", "conversation_id"]);
 
 function isUuid(value) {
     return UUID_RE.test(String(value || ""));
@@ -141,12 +127,6 @@ function isUuid(value) {
 
 function normalizeFieldName(key) {
     return FIELD_ALIASES[key] || key;
-}
-
-function compactObject(value) {
-    return Object.fromEntries(
-        Object.entries(value).filter(([, item]) => item !== undefined),
-    );
 }
 
 function normalizePayload(table, payload, userId) {
@@ -160,6 +140,10 @@ function normalizePayload(table, payload, userId) {
         const field = normalizeFieldName(key);
         if (field === "id" && value && !isUuid(value)) {
             normalized.client_id = String(value);
+            return;
+        }
+        if (UUID_FIELDS.has(field) && value && !isUuid(value)) {
+            metadata[`${field}_client_value`] = String(value);
             return;
         }
         if (allowedFields.has(field)) {
@@ -185,7 +169,7 @@ function normalizeListOptions(options = {}) {
 }
 
 async function listRows(table, options = {}) {
-    const userId = await getUserId(options.userId);
+    const userId = await getCurrentUserId(options.userId);
     const { limit, orderBy, ascending, filters } = normalizeListOptions(options);
     let query = requireSupabase()
         .from(table)
@@ -205,17 +189,8 @@ async function listRows(table, options = {}) {
 }
 
 async function createRow(table, payload, options = {}) {
-    const userId = await getUserId(options.userId);
+    const userId = await getCurrentUserId(options.userId);
     const row = normalizePayload(table, payload, userId);
-    if (table === TABLES.tasks) {
-        console.info("[learning-sync] insert payload", row);
-    } else if (table === TABLES.sessions) {
-        console.info("[learning-sync] study session insert payload", row);
-    } else if (table === TABLES.blockages) {
-        console.info("[learning-sync] blockage insert payload", row);
-    } else if (table === TABLES.reviews) {
-        console.info("[learning-sync] review insert payload", row);
-    }
     const { data, error } = await requireSupabase()
         .from(table)
         .insert(row)
@@ -227,16 +202,9 @@ async function createRow(table, payload, options = {}) {
 }
 
 async function upsertRow(table, payload, options = {}) {
-    const userId = await getUserId(options.userId);
+    const userId = await getCurrentUserId(options.userId);
     const row = normalizePayload(table, payload, userId);
     const onConflict = options?.onConflict || "user_id,client_id";
-    if (table === TABLES.sessions) {
-        console.info("[learning-sync] study session upsert payload", row);
-    } else if (table === TABLES.reviews) {
-        console.info("[learning-sync] review upsert payload", row);
-    } else {
-        console.info("[learning-sync] upsert payload", row);
-    }
 
     const { data, error } = await requireSupabase()
         .from(table)
@@ -249,7 +217,7 @@ async function upsertRow(table, payload, options = {}) {
 }
 
 async function updateRow(table, idOrClientId, patch, options = {}) {
-    const userId = await getUserId(options.userId);
+    const userId = await getCurrentUserId(options.userId);
     const value = String(idOrClientId || "").trim();
     if (!value) throw new Error("A row id or client_id is required for update.");
 

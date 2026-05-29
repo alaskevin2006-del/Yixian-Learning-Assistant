@@ -1,9 +1,10 @@
 import { Composer, MessageBubble } from "../../components/common/ChatPrimitives";
 
-export function ChatView({ title, chatTab, setChatTab, messages, input, setInput, send, openSource, timer, openTimer, finish, reviews, aiStatus, aiError, webEnabled, selectedReferences, onRename }) {
+export function ChatView({ title, chatTab, setChatTab, messages, input, setInput, send, openSource, timer, openTimer, finish, reviews, confirmReviews, aiStatus, aiError, webEnabled, setWebEnabled, selectedReferences, uploadAttachment, attachmentCount, onRename }) {
+    const hasPendingReviews = reviews.some((item) => item.status !== "confirmed");
     return (
         <section className="view" id="view-chat">
-            <div className="topbar"><div className="top-title">{title}</div><div className="top-actions"><button className="mini-btn" onClick={onRename}>改名</button><button className="mini-btn" onClick={openTimer}>计时</button><button className="icon-btn">⋯</button></div></div>
+            <div className="topbar"><div className="top-title">{title}</div><div className="top-actions"><button className="mini-btn" onClick={onRename}>改名</button><button className="mini-btn" onClick={openTimer}>计时</button></div></div>
             <div className="chat-shell">
                 <div className="chat-head">
                     <div className="tabs"><button className={`tab ${chatTab === "chat" ? "active" : ""}`} onClick={() => setChatTab("chat")}>聊天</button><button className={`tab ${chatTab === "review" ? "active" : ""}`} onClick={() => setChatTab("review")}>复盘</button></div>
@@ -16,20 +17,21 @@ export function ChatView({ title, chatTab, setChatTab, messages, input, setInput
                         {aiError && <div className="error-text">{aiError}</div>}
                     </div>
                 ) : (
-                    <div className="review-layout"><div className="card"><h3>用户原始自述</h3><p className="muted">可保留原貌，也可由 AI 润色后存档。</p>{reviews.map((item) => <div className="review-item" key={item.id}>{item.original}</div>)}</div><div className="card pending"><h3>待确认收获</h3><p className="muted">用户回复“入库”后先暂存在这里。</p>{reviews.map((item) => <div className="review-item" key={item.id}>{item.harvest}</div>)}<button className="primary-btn">一键确认入库</button></div></div>
+                    <div className="review-layout">
+                        <div className="card"><h3>用户原始自述</h3><p className="muted">可保留原貌，也可由 AI 润色后存档。</p>{reviews.map((item) => <div className="review-item" key={item.id}>{item.original}</div>)}</div>
+                        <div className="card pending"><h3>待确认收获</h3><p className="muted">确认后会保存到当前学科复盘历史。</p>{reviews.map((item) => <div className="review-item" key={item.id}>{item.harvest}</div>)}<button className="primary-btn" disabled={!hasPendingReviews} onClick={confirmReviews}>一键确认入库</button></div>
+                    </div>
                 )}
-                <Composer value={input} setValue={setInput} onSend={send} placeholder="有问题，尽管问" openSource={openSource} webEnabled={webEnabled} referenceCount={selectedReferences.length} disabled={aiStatus === "loading"} />
+                <Composer value={input} setValue={setInput} onSend={send} placeholder="有问题，尽管问" openSource={openSource} webEnabled={webEnabled} onToggleWeb={() => setWebEnabled((value) => !value)} referenceCount={selectedReferences.length} uploadAttachment={uploadAttachment} attachmentCount={attachmentCount} disabled={aiStatus === "loading"} />
             </div>
         </section>
     );
 }
 
-
-
-export function FreeChatView({ title, messages, input, setInput, send, openSource, aiStatus, aiError, webEnabled, selectedReferences, onRename }) {
+export function FreeChatView({ title, messages, input, setInput, send, openSource, aiStatus, aiError, webEnabled, setWebEnabled, selectedReferences, uploadAttachment, attachmentCount, onRename }) {
     return (
         <section className="view" id="view-free-chat">
-            <div className="topbar"><div className="top-title">{title}</div><div className="top-actions"><button className="mini-btn" onClick={onRename}>改名</button><button className="icon-btn">⋯</button></div></div>
+            <div className="topbar"><div className="top-title">{title}</div><div className="top-actions"><button className="mini-btn" onClick={onRename}>改名</button></div></div>
             <div className="chat-shell free-chat-shell">
                 <div className="free-chat-body">
                     {messages.length === 0 && <div className="message ai">这里是新对话入口。你可以直接开始提问、整理资料或临时讨论；发送第一条消息后，它会出现在左侧最近对话中。</div>}
@@ -37,9 +39,8 @@ export function FreeChatView({ title, messages, input, setInput, send, openSourc
                     {aiStatus === "loading" && <div className="muted">AI 正在回答...</div>}
                     {aiError && <div className="error-text">{aiError}</div>}
                 </div>
-                <Composer value={input} setValue={setInput} onSend={send} placeholder="开始一个新对话" openSource={openSource} webEnabled={webEnabled} referenceCount={selectedReferences.length} disabled={aiStatus === "loading"} />
+                <Composer value={input} setValue={setInput} onSend={send} placeholder="开始一个新对话" openSource={openSource} webEnabled={webEnabled} onToggleWeb={() => setWebEnabled((value) => !value)} referenceCount={selectedReferences.length} uploadAttachment={uploadAttachment} attachmentCount={attachmentCount} disabled={aiStatus === "loading"} />
             </div>
         </section>
     );
 }
-

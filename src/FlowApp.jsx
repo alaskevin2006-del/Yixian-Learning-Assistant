@@ -8,8 +8,10 @@ import { PlanView } from "./features/planning/PlanView";
 import { NewSubjectView, SubjectView } from "./features/subjects/SubjectViews";
 import { SettingsView } from "./features/settings/SettingsView";
 import { chatWithAI } from "./services/aiApi";
+import { askWithTempAttachments, uploadTempAttachment } from "./services/tempAttachmentApi";
 import { supabase } from "./services/supabaseClient";
 import { retrieveContext } from "./services/resourceApi";
+import { useLocalState } from "./hooks/useLocalState";
 import { usePublicResourceLibrary } from "./hooks/usePublicResourceLibrary";
 import {
     addConversationMessage,
@@ -64,29 +66,6 @@ const DEFAULT_SUBJECTS = [
         isDemo: true,
     },
 ];
-
-function readLocal(key, fallback) {
-    try {
-        const raw = window.localStorage.getItem(key);
-        return raw ? JSON.parse(raw) : fallback;
-    } catch {
-        return fallback;
-    }
-}
-
-function writeLocal(key, value) {
-    try {
-        window.localStorage.setItem(key, JSON.stringify(value));
-    } catch {
-        // Best effort local state.
-    }
-}
-
-function useLocalState(key, fallback) {
-    const [value, setValue] = useState(() => readLocal(key, fallback));
-    useEffect(() => writeLocal(key, value), [key, value]);
-    return [value, setValue];
-}
 
 function oneLine(value, max = 24) {
     const text = String(value || "").replace(/\s+/g, " ").trim();
@@ -448,6 +427,49 @@ function timeFromValue(value) {
     return match ? match[0] : "";
 }
 
+function hasTimezone(value) {
+    return /(?:z|[+-]\d{2}:?\d{2})$/i.test(String(value || ""));
+}
+
+function datePartFromValue(value) {
+    if (!value) return "";
+    if (hasTimezone(value)) {
+        const date = new Date(value);
+        if (!Number.isNaN(date.getTime())) {
+            return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+        }
+    }
+    return dateFromValue(value);
+}
+
+function timePartFromValue(value) {
+    if (!value) return "";
+    if (hasTimezone(value)) {
+        const date = new Date(value);
+        if (!Number.isNaN(date.getTime())) {
+            return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+        }
+    }
+    return timeFromValue(value);
+}
+
+function localDateTimeWithOffset(date, time) {
+    const datePart = date || todayKey();
+    const timePart = time || "00:00";
+    const offsetMinutes = -new Date(`${datePart}T${timePart}:00`).getTimezoneOffset();
+    const sign = offsetMinutes >= 0 ? "+" : "-";
+    const abs = Math.abs(offsetMinutes);
+    const hh = String(Math.floor(abs / 60)).padStart(2, "0");
+    const mm = String(abs % 60).padStart(2, "0");
+    return `${datePart}T${timePart}:00${sign}${hh}:${mm}`;
+}
+
+function mergeById(remoteItems, localItems, isLocalItem) {
+    const seen = new Set(remoteItems.flatMap((item) => [item.id, item.remoteId, item.clientId].filter(Boolean)));
+    const preservedLocal = (localItems || []).filter((item) => isLocalItem(item) && !seen.has(item.id));
+    return [...remoteItems, ...preservedLocal];
+}
+
 function toLocalTask(row) {
     const meta = row?.metadata || {};
     const slot = String(row?.slot || meta.slot || "");
@@ -473,9 +495,9 @@ function toLocalDraft(row, subjects = []) {
     const subject = subjects.find((item) => item.id === row?.subjectId || item.id === row?.subject_id);
     const plannedStart = row?.plannedStart || row?.planned_start || "";
     const plannedEnd = row?.plannedEnd || row?.planned_end || "";
-    const date = dateFromValue(plannedStart) || meta.date || todayKey();
-    const start = timeFromValue(plannedStart) || meta.start || "19:00";
-    const end = timeFromValue(plannedEnd) || meta.end || "20:00";
+    const date = datePartFromValue(plannedStart) || meta.date || todayKey();
+    const start = timePartFromValue(plannedStart) || meta.start || "19:00";
+    const end = timePartFromValue(plannedEnd) || meta.end || "20:00";
     return {
         id: row?.id || `draft-${uid()}`,
         conversationId: row?.conversationId || row?.planning_conversation_id || "",
@@ -549,13 +571,15 @@ export default function FlowApp() {
     const [subjectReviews, setSubjectReviews] = useLocalState("flow.subjectReviews", {});
     const [privateResources, setPrivateResources] = useState([]);
     const [modal, setModal] = useState("");
+    const [detailTask, setDetailTask] = useState(null);
     const [actionDialog, setActionDialog] = useState(null);
     const [renameDialog, setRenameDialog] = useState(null);
     const [sourceQuery, setSourceQuery] = useState("");
     const [sourceResults, setSourceResults] = useState([]);
     const [selectedReferences, setSelectedReferences] = useLocalState("flow.selectedReferences", []);
-    const webEnabled = true;
-    const setWebEnabled = () => {};
+    const [webEnabled, setWebEnabled] = useLocalState("flow.webEnabled", true);
+    const [tempAttachments, setTempAttachments] = useLocalState("flow.tempAttachments", []);
+    const [selectedAttachmentIds, setSelectedAttachmentIds] = useLocalState("flow.selectedAttachmentIds", []);
     const [aiStatus, setAiStatus] = useState("idle");
     const [aiError, setAiError] = useState("");
     const {
@@ -597,6 +621,8 @@ export default function FlowApp() {
         taskRemoteId: "",
         subjectId: "",
         isDemoTask: false,
+        mode: "stopwatch",
+        pomodoroPhase: "focus",
     });
     const [finishForm, setFinishForm] = useState({ status: "done", note: "" });
 
@@ -700,12 +726,25 @@ export default function FlowApp() {
         if (!timer.running || !timer.startedAt) return undefined;
         const id = window.setInterval(() => {
             const seconds = Math.max(0, Math.floor((Date.now() - new Date(timer.startedAt).getTime()) / 1000));
+            if (timer.mode === "pomodoro") {
+                const phase = timer.pomodoroPhase || "focus";
+                const limit = phase === "rest" ? 5 * 60 : 25 * 60;
+                if (seconds >= limit) {
+                    setTimer((prev) => ({
+                        ...prev,
+                        pomodoroPhase: phase === "rest" ? "focus" : "rest",
+                        startedAt: new Date().toISOString(),
+                        elapsed: "00:00",
+                    }));
+                    return;
+                }
+            }
             const mm = String(Math.floor(seconds / 60)).padStart(2, "0");
             const ss = String(seconds % 60).padStart(2, "0");
             setTimer((prev) => ({ ...prev, elapsed: `${mm}:${ss}` }));
         }, 1000);
         return () => window.clearInterval(id);
-    }, [timer.running, timer.startedAt]);
+    }, [timer.running, timer.startedAt, timer.mode, timer.pomodoroPhase]);
 
     useEffect(() => {
         if (!currentUser) return;
@@ -724,30 +763,33 @@ export default function FlowApp() {
         ]).then(async ([subjectRows, freeRows, planningRows]) => {
             if (!alive) return;
             if (subjectRows.length) {
-                setSubjects(subjectRows.map((item) => ({
+                const remoteSubjects = subjectRows.map((item) => ({
                     id: item.id,
                     name: item.name,
                     instruction: item.instruction || "",
-                })));
+                }));
+                setSubjects((prev) => mergeById(remoteSubjects, prev, (item) => String(item.id || "").startsWith("subject-")));
                 if (!subjectRows.some((item) => item.id === activeSubjectId)) {
                     setActiveSubjectId(subjectRows[0].id);
                 }
             }
             if (freeRows.length) {
-                setFreeConversations(freeRows.filter((item) => !isBlankConversationTitle(item.title)).map((item) => ({
+                const remoteFree = freeRows.filter((item) => !isBlankConversationTitle(item.title)).map((item) => ({
                     id: item.id,
                     title: item.title || "最近对话",
                     createdAt: item.createdAt,
                     updatedAt: item.updatedAt,
-                })));
+                }));
+                setFreeConversations((prev) => mergeById(remoteFree, prev, (item) => isLocalConversationId(item.id)));
             }
             if (planningRows.length) {
-                setPlanningConversations(planningRows.filter((item) => !isBlankConversationTitle(item.title)).map((item) => ({
+                const remotePlanning = planningRows.filter((item) => !isBlankConversationTitle(item.title)).map((item) => ({
                     id: item.id,
                     title: item.title || "规划对话",
                     createdAt: item.createdAt,
                     updatedAt: item.updatedAt,
-                })));
+                }));
+                setPlanningConversations((prev) => mergeById(remotePlanning, prev, (item) => isLocalConversationId(item.id)));
                 if (!activePlanningId) setActivePlanningId(planningRows[0].id);
             }
         });
@@ -759,7 +801,8 @@ export default function FlowApp() {
         listLearningTasks({ userId: currentUser.id, limit: 200 })
             .then((rows) => {
                 if (!rows.length) return;
-                setTasks(rows.map(toLocalTask));
+                const remoteTasks = rows.map(toLocalTask);
+                setTasks((prev) => mergeById(remoteTasks, prev, (item) => !item.remoteId));
             })
             .catch(() => null);
     }, [currentUser?.id, setTasks]);
@@ -807,7 +850,7 @@ export default function FlowApp() {
     }, [currentUser?.id, planningConversationId, setDraftsByConversation, subjects]);
 
     useEffect(() => {
-        if (!currentUser?.id || !activeFreeId) return;
+        if (!currentUser?.id || !activeFreeId || isLocalConversationId(activeFreeId)) return;
         listConversationMessages(activeFreeId, { userId: currentUser.id })
             .then((rows) => {
                 if (!rows.length) return;
@@ -825,7 +868,7 @@ export default function FlowApp() {
     }, [activeFreeId, currentUser?.id, setMessages]);
 
     useEffect(() => {
-        if (!currentUser?.id || !activeSubjectConversationId) return;
+        if (!currentUser?.id || !activeSubjectConversationId || isLocalConversationId(activeSubjectConversationId)) return;
         listConversationMessages(activeSubjectConversationId, { userId: currentUser.id })
             .then((rows) => {
                 if (!rows.length) return;
@@ -843,7 +886,7 @@ export default function FlowApp() {
     }, [activeSubjectConversationId, currentUser?.id, setMessages]);
 
     useEffect(() => {
-        if (!currentUser?.id || !planningConversationId) return;
+        if (!currentUser?.id || !planningConversationId || isLocalConversationId(planningConversationId)) return;
         listConversationMessages(planningConversationId, { userId: currentUser.id })
             .then((rows) => {
                 if (!rows.length) return;
@@ -1129,10 +1172,14 @@ export default function FlowApp() {
     }
 
     function saveActiveSubjectSettings() {
-        if (!currentUser?.id || !activeSubject?.id || String(activeSubject.id).startsWith("subject-")) return;
-        updateSubjectRecord(activeSubject, { userId: currentUser.id })
+        if (!currentUser?.id || !activeSubject?.id) return;
+        const save = String(activeSubject.id).startsWith("subject-")
+            ? createSubjectRecord({ name: activeSubject.name, instruction: activeSubject.instruction || "" }, { userId: currentUser.id })
+            : updateSubjectRecord(activeSubject, { userId: currentUser.id });
+        save
             .then((saved) => {
-                setSubjects((prev) => prev.map((item) => (item.id === saved.id ? { ...item, ...saved } : item)));
+                setSubjects((prev) => prev.map((item) => (item.id === activeSubject.id || item.id === saved.id ? { ...item, ...saved } : item)));
+                setActiveSubjectId(saved.id);
                 setNotice("学科设置已保存");
             })
             .catch((error) => setNotice(error?.message || "学科设置保存失败"));
@@ -1152,6 +1199,85 @@ export default function FlowApp() {
             subjectId: activeSubject?.id,
             maxChars: 6000,
         }).catch(() => ({ contextText: "", citations: [] }));
+    }
+
+    async function uploadChatAttachment(event) {
+        const file = event.target.files?.[0];
+        if (!file) return;
+        if (!currentUser) {
+            openAuth();
+            event.target.value = "";
+            return;
+        }
+        try {
+            const uploaded = await uploadTempAttachment(file, currentUser);
+            setTempAttachments((prev) => [uploaded, ...prev]);
+            setSelectedAttachmentIds((prev) => [uploaded.id, ...prev.filter((id) => id !== uploaded.id)]);
+            setNotice("附件已加入本次 AI 对话");
+        } catch (error) {
+            setNotice(error?.message || "附件上传失败");
+        } finally {
+            event.target.value = "";
+        }
+    }
+
+    function selectedTempAttachments() {
+        const selected = new Set(selectedAttachmentIds);
+        return tempAttachments.filter((item) => selected.has(item.id));
+    }
+
+    async function askAIWithOptionalAttachments({ text, history, context, conversationType, subjectId, subjectInstruction, draftContext }) {
+        const webSearch = { enabled: webEnabled, mode: webEnabled ? "always" : "auto", topK: 5 };
+        const attachments = selectedTempAttachments();
+        if (attachments.length) {
+            const question = conversationType === "planning"
+                ? [
+                    text,
+                    "",
+                    "请结合附件、引用资料和联网结果制定学习计划。回答中先给自然语言建议，最后附加一个合法 JSON 对象：",
+                    '{"drafts":[{"title":"","subjectName":"","description":"","plannedStart":"","plannedEnd":""}]}',
+                    "每个 drafts 项都要有明确任务标题、学科、说明、开始时间和结束时间。",
+                ].join("\n")
+                : text;
+            const result = await askWithTempAttachments({
+                question,
+                attachments,
+                selectedAttachmentIds,
+                contextText: context.contextText,
+                references: selectedReferences,
+                webSearch,
+            });
+            return {
+                reply: result.answer,
+                citations: [...(context.citations || []), ...(result.citations || [])],
+                webCitations: result.webCitations || [],
+                drafts: conversationType === "planning" ? extractDraftsFromText(result.answer) : [],
+            };
+        }
+        return chatWithAI({
+            message: text,
+            history,
+            contextText: context.contextText,
+            mode: "answer",
+            conversationType,
+            subjectId,
+            subjectInstruction,
+            selectedReferences,
+            draftContext,
+            webSearch,
+            returnFullResponse: true,
+        });
+    }
+
+    function extractDraftsFromText(text) {
+        const match = String(text || "").match(/\{[\s\S]*"drafts"[\s\S]*\}/);
+        if (!match) return [];
+        try {
+            const parsed = JSON.parse(match[0]);
+            return Array.isArray(parsed?.drafts) ? parsed.drafts : [];
+        } catch {
+            return [];
+        }
     }
 
     function draftsFromAI(rawDrafts, conversationId, fallbackText, replyText = "", defaultSubject = activeSubject?.name) {
@@ -1244,17 +1370,13 @@ export default function FlowApp() {
         await saveConversationMessage(conversationId, userMessage);
         try {
             const context = await buildReferenceContext(text);
-            const result = await chatWithAI({
-                message: text,
+            const result = await askAIWithOptionalAttachments({
+                text,
                 history,
-                contextText: context.contextText,
-                mode: "answer",
+                context,
                 conversationType: view === "free-chat" ? "free" : "subject",
                 subjectId: view === "chat" ? activeSubject?.id : null,
                 subjectInstruction: view === "chat" ? activeSubject?.instruction : "",
-                selectedReferences,
-                webSearch: { enabled: true, mode: "always", topK: 5 },
-                returnFullResponse: true,
             });
             const assistantMessage = {
                 id: `msg-${uid()}`,
@@ -1316,13 +1438,13 @@ export default function FlowApp() {
         setAiError("");
         await saveConversationMessage(conversationId, userMessage);
         try {
-            const result = await chatWithAI({
-                message: text,
+            const context = await buildReferenceContext(text);
+            const result = await askAIWithOptionalAttachments({
+                text,
                 history,
+                context,
                 conversationType: "planning",
                 draftContext: { existingDraftCount: (draftsByConversation[conversationId] || []).length },
-                webSearch: { enabled: true, mode: "always", topK: 5 },
-                returnFullResponse: true,
             });
             const assistantMessage = { id: `msg-${uid()}`, role: "assistant", content: result.reply };
             const nextDrafts = draftsFromAI(result.drafts, conversationId, text, result.reply, activeSubject.name);
@@ -1343,11 +1465,21 @@ export default function FlowApp() {
                         subjectId: subject?.id || null,
                         title: draft.title,
                         description: draft.description,
-                        plannedStart: `${draft.date}T${draft.start}:00`,
-                        plannedEnd: `${draft.date}T${draft.end}:00`,
+                        plannedStart: localDateTimeWithOffset(draft.date, draft.start),
+                        plannedEnd: localDateTimeWithOffset(draft.date, draft.end),
                         status: draft.status,
                         metadata: { clientId: draft.id, subject: draft.subject, date: draft.date, start: draft.start, end: draft.end },
-                    }, { userId: currentUser.id }).catch(() => null);
+                    }, { userId: currentUser.id })
+                        .then((saved) => {
+                            if (!saved?.id) return;
+                            setDraftsByConversation((prev) => ({
+                                ...prev,
+                                [conversationId]: (prev[conversationId] || []).map((item) => (
+                                    item.id === draft.id ? { ...item, id: saved.id, remoteId: saved.id } : item
+                                )),
+                            }));
+                        })
+                        .catch(() => null);
                 });
             }
             await saveConversationMessage(conversationId, assistantMessage);
@@ -1373,12 +1505,18 @@ export default function FlowApp() {
             id: `task-${uid()}`,
             title: draft.title,
             subject: draft.subject || activeSubject.name,
+            subjectId: draft.subjectId || activeSubject.id,
             date: draft.date || todayKey(),
             start: draft.start || "19:00",
             end: draft.end || "20:00",
             description: draft.description,
             status: "pending",
             source: fromDemo ? "manual" : "planning-draft",
+            plannedDate: draft.date || todayKey(),
+            startTime: draft.start || "19:00",
+            endTime: draft.end || "20:00",
+            slot: `${draft.start || "19:00"}-${draft.end || "20:00"}`,
+            draftId: fromDemo ? "" : draft.id,
         };
         setTasks((prev) => [task, ...prev]);
         if (currentUser?.id && !fromDemo) {
@@ -1387,11 +1525,12 @@ export default function FlowApp() {
                 ...task,
                 clientId: task.id,
                 subjectId: subject?.id || null,
+                draftId: draft.id,
                 conversationId: isLocalConversationId(draft.conversationId) ? null : draft.conversationId,
                 plannedDate: task.date,
                 slot: `${task.start}-${task.end}`,
                 source: "planning-draft",
-                metadata: { description: task.description, start: task.start, end: task.end },
+                metadata: { description: task.description, start: task.start, end: task.end, draftClientId: draft.id },
             }, { userId: currentUser.id })
                 .then((saved) => {
                     setTasks((prev) => prev.map((item) => (item.id === task.id ? { ...item, remoteId: saved.id } : item)));
@@ -1414,6 +1553,9 @@ export default function FlowApp() {
             ...prev,
             [draft.conversationId]: (prev[draft.conversationId] || []).filter((item) => item.id !== draft.id),
         }));
+        if (currentUser?.id && draft?.id && !String(draft.id).startsWith("draft-")) {
+            updatePlanningDraft(draft.id, { status: "deleted" }, { userId: currentUser.id }).catch(() => null);
+        }
     }
 
     function createSubjectQuick(name) {
@@ -1497,6 +1639,8 @@ export default function FlowApp() {
             taskRemoteId: task?.remoteId || "",
             subjectId: task?.subjectId || activeSubject.id,
             isDemoTask: isDemoItem(task),
+            mode: timer.mode || "stopwatch",
+            pomodoroPhase: timer.pomodoroPhase || "focus",
         });
         setFinishForm({ status: "done", note: "" });
         setModal("timer");
@@ -1512,6 +1656,8 @@ export default function FlowApp() {
             subject: prev.subject || activeSubject.name,
             subjectId: prev.subjectId || activeSubject.id,
             isDemoTask: false,
+            mode: prev.mode || "stopwatch",
+            pomodoroPhase: prev.pomodoroPhase || "focus",
         }));
         setModal("timer");
     }
@@ -1541,7 +1687,7 @@ export default function FlowApp() {
 
     async function openPrivateResource(resource) {
         try {
-            const { signedUrl } = await createPrivateResourceSignedUrl(resource.id || resource.resourceId, currentUser?.id);
+            const { signedUrl } = await createPrivateResourceSignedUrl(resource.resourceId || resource.id, currentUser?.id);
             window.open(signedUrl, "_blank", "noopener,noreferrer");
         } catch {
             setNotice("无法打开该资料");
@@ -1583,6 +1729,15 @@ export default function FlowApp() {
         if (currentUser?.id && !String(id).startsWith("resource-")) {
             removeSubjectResourceRecord(id, { userId: currentUser.id }).catch(() => null);
         }
+    }
+
+    function openSubjectResource(resource) {
+        if (!resource) return;
+        if (resource.scope === "private") {
+            openPrivateResource(resource);
+            return;
+        }
+        openPublicResource(resource);
     }
 
     function minutesFromElapsed(value) {
@@ -1652,6 +1807,32 @@ export default function FlowApp() {
         setModal("update-plan");
     }
 
+    function confirmCurrentReviews() {
+        if (!activeSubject?.id) return;
+        const pending = currentReviews.filter((item) => item.status !== "confirmed");
+        if (!pending.length) return;
+        setSubjectReviews((prev) => ({
+            ...prev,
+            [activeSubject.id]: (prev[activeSubject.id] || []).map((item) => (
+                item.status === "confirmed" ? item : { ...item, status: "confirmed" }
+            )),
+        }));
+        if (currentUser?.id && !String(activeSubject.id).startsWith("subject-")) {
+            pending.forEach((item) => {
+                upsertSubjectReview({
+                    id: String(item.id || "").startsWith("review-") ? undefined : item.id,
+                    subjectId: activeSubject.id,
+                    conversationId: item.conversationId || null,
+                    originalText: item.original || item.originalText || "",
+                    harvestText: item.harvest || item.harvestText || item.polishedText || "",
+                    status: "confirmed",
+                    metadata: item.metadata || {},
+                }, { userId: currentUser.id }).catch(() => null);
+            });
+        }
+        setNotice("复盘收获已确认入库");
+    }
+
     return (
         <div className="app">
             <Sidebar
@@ -1683,12 +1864,22 @@ export default function FlowApp() {
                         drafts={currentDrafts}
                         confirmDraft={confirmDraft}
                         deleteDraft={deleteDraft}
+                        openTaskDetail={(task) => {
+                            setDetailTask(task);
+                            setModal("task-detail");
+                        }}
                         deleteConversation={deletePlanningConversation}
                         openRenameDialog={setRenameDialog}
                         input={input}
                         setInput={setInput}
                         sendPlanningMessage={sendPlanningMessage}
-                        messages={planningMessages}
+                        messages={planningMessages.length > 0 ? planningMessages : (messages[`planning:${planningConversationId}`] || [])}
+                        openSource={() => setModal("source")}
+                        selectedReferences={selectedReferences}
+                        webEnabled={webEnabled}
+                        setWebEnabled={setWebEnabled}
+                        uploadAttachment={uploadChatAttachment}
+                        attachmentCount={selectedAttachmentIds.length}
                         taskForm={taskForm}
                         setTaskForm={setTaskForm}
                         saveTask={saveTask}
@@ -1733,6 +1924,11 @@ export default function FlowApp() {
                         saveSubject={saveActiveSubjectSettings}
                         deleteConversation={deleteSubjectConversation}
                         openRenameDialog={setRenameDialog}
+                        uploadAttachment={uploadChatAttachment}
+                        webEnabled={webEnabled}
+                        setWebEnabled={setWebEnabled}
+                        openSource={() => setModal("source")}
+                        openResource={openSubjectResource}
                     />
                 )}
                 {view === "chat" && (
@@ -1749,11 +1945,14 @@ export default function FlowApp() {
                         openTimer={() => setModal("timer")}
                         finish={() => setModal("finish")}
                         reviews={currentReviews}
+                        confirmReviews={confirmCurrentReviews}
                         aiStatus={aiStatus}
                         aiError={aiError}
                         webEnabled={webEnabled}
                         setWebEnabled={setWebEnabled}
                         selectedReferences={selectedReferences}
+                        uploadAttachment={uploadChatAttachment}
+                        attachmentCount={selectedAttachmentIds.length}
                         onRename={() => activeSubjectConversationId && setRenameDialog({ type: "subject", id: activeSubjectConversationId, title: subjectConversation?.title || "新对话" })}
                     />
                 )}
@@ -1770,6 +1969,8 @@ export default function FlowApp() {
                         webEnabled={webEnabled}
                         setWebEnabled={setWebEnabled}
                         selectedReferences={selectedReferences}
+                        uploadAttachment={uploadChatAttachment}
+                        attachmentCount={selectedAttachmentIds.length}
                         onRename={() => activeFreeId && setRenameDialog({ type: "free", id: activeFreeId, title: freeConversation?.title || "新对话" })}
                     />
                 )}
@@ -1805,8 +2006,12 @@ export default function FlowApp() {
             />
             <TaskDetailModal
                 open={modal === "task-detail"}
-                task={tasks[0]}
+                task={detailTask || tasks[0]}
                 close={() => setModal("")}
+                startTimer={(task) => {
+                    setModal("");
+                    startTimer(task);
+                }}
             />
             <FinishModal
                 open={modal === "finish"}

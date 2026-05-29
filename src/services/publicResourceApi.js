@@ -1,89 +1,11 @@
-import { retrieveContext } from "./resourceApi";
+import { requireSupabase } from "./coreDataApi";
+import { retrieveContext, searchResources } from "./resourceApi";
 
-const DEMO_SOURCE = "demo";
-const DEMO_PUBLIC_RESOURCES = [
-    {
-        resourceId: "resource-demo-supervised-learning",
-        chunkId: "lecture-01",
-        scope: "public",
-        title: "范例：课程讲义：监督学习基础",
-        fileType: "PDF",
-        path: "范例资料 / 机器学习导论 / 课程讲义",
-        chapter: "监督学习基础",
-        section: "训练、验证与泛化",
-        tags: ["范例", "机器学习导论", "监督学习"],
-        contentPreview: "监督学习以带标签数据为基础，通过训练集学习模型参数，并使用验证集检查泛化能力。复习重点包括特征、标签、损失函数、过拟合与正则化。",
-        canPreview: true,
-        canDownload: true,
-        canReference: true,
-        source: DEMO_SOURCE,
-        isDemo: true,
-    },
-    {
-        resourceId: "resource-demo-metrics-note",
-        chunkId: "note-01",
-        scope: "public",
-        title: "范例：笔记：模型评估指标",
-        fileType: "MD",
-        path: "范例资料 / 机器学习导论 / 复习笔记",
-        chapter: "模型评估",
-        section: "分类指标对比",
-        tags: ["范例", "模型评估", "precision", "recall", "F1", "ROC-AUC"],
-        contentPreview: "accuracy 适合类别相对均衡的场景；precision 关注预测为正的样本有多少是真的；recall 关注真实正样本找回了多少；F1 平衡 precision 与 recall。",
-        canPreview: true,
-        canDownload: true,
-        canReference: true,
-        source: DEMO_SOURCE,
-        isDemo: true,
-    },
-    {
-        resourceId: "resource-demo-past-paper",
-        chunkId: "exam-01",
-        scope: "public",
-        title: "范例：往年题：机器学习导论期末样题",
-        fileType: "PDF",
-        path: "范例资料 / 机器学习导论 / 往年题",
-        chapter: "期末样题",
-        section: "综合练习",
-        tags: ["范例", "往年题", "期末复习"],
-        contentPreview: "样题覆盖监督学习基本概念、线性回归、逻辑回归、模型评估指标和神经网络基础，适合在第二周进行限时练习。",
-        canPreview: true,
-        canDownload: true,
-        canReference: true,
-        source: DEMO_SOURCE,
-        isDemo: true,
-    },
-    {
-        resourceId: "resource-demo-neural-network-sheet",
-        chunkId: "summary-01",
-        scope: "public",
-        title: "范例：总结：神经网络基础速查表",
-        fileType: "MD",
-        path: "范例资料 / 机器学习导论 / 速查表",
-        chapter: "神经网络基础",
-        section: "前向传播与反向传播",
-        tags: ["范例", "神经网络", "速查表"],
-        contentPreview: "速查表整理前向传播、激活函数、损失函数、反向传播链式法则、学习率和过拟合控制方法，用于睡前轻量回顾。",
-        canPreview: true,
-        canDownload: true,
-        canReference: true,
-        source: DEMO_SOURCE,
-        isDemo: true,
-    },
+const BLOCKED_PUBLIC_RESOURCE_PATTERNS = [
+    "高等数学下册",
+    "高数",
+    "pinecone",
 ];
-
-function matchesResource(resource, query) {
-    const trimmed = String(query || "").trim().toLowerCase();
-    if (!trimmed) return true;
-    return [
-        resource.title,
-        resource.path,
-        resource.chapter,
-        resource.section,
-        resource.tags,
-        resource.contentPreview,
-    ].flat().join(" ").toLowerCase().includes(trimmed);
-}
 
 export function listPendingPublicUploads() {
     return [];
@@ -110,21 +32,110 @@ export function queuePublicResourceUpload(file) {
 
 export async function listPublicResources(query = "") {
     const pending = listPendingPublicUploads();
-    const base = pending.length > 0 ? pending : DEMO_PUBLIC_RESOURCES;
-    if (!String(query || "").trim()) return base;
-    return base.filter((item) => matchesResource(item, query));
+    const trimmed = String(query || "").trim();
+    const remote = await listPublicResourceRows(trimmed).catch(() => []);
+    return mergeResourceResults(pending, remote);
 }
 
 export async function searchPublicResources(query) {
     const trimmed = String(query || "").trim();
     if (!trimmed) return listPublicResources();
-    return listPublicResources(trimmed);
+    const aiMatches = await searchResources(trimmed, { scope: "public" }).catch(() => []);
+    const rowMatches = await listPublicResourceRows(trimmed).catch(() => []);
+    const pendingMatches = listPendingPublicUploads().filter((item) => {
+        const haystack = [item.title, item.path, item.contentPreview].join(" ").toLowerCase();
+        return haystack.includes(trimmed.toLowerCase());
+    });
+    return mergeResourceResults(pendingMatches, aiMatches, rowMatches);
+}
+
+function normalizePublicResourceRow(row = {}) {
+    const metadata = row.metadata && typeof row.metadata === "object" ? row.metadata : {};
+    const title = String(row.name || metadata.originalName || metadata.fileName || "公共资料");
+    return {
+        id: String(row.id || ""),
+        resourceId: String(row.id || ""),
+        chunkId: "",
+        scope: "public",
+        title,
+        fileType: String(row.file_type || metadata.fileType || "file").toUpperCase(),
+        path: String(metadata.path || metadata.folder || title),
+        chapter: String(metadata.chapter || ""),
+        section: String(metadata.section || ""),
+        contentPreview: String(row.summary || metadata.summary || ""),
+        canPreview: row.can_preview !== false,
+        canDownload: row.can_download !== false,
+        canReference: row.can_reference !== false,
+        tags: Array.isArray(row.tags) ? row.tags : [],
+        metadata,
+        createdAt: row.created_at || "",
+        updatedAt: row.updated_at || "",
+    };
+}
+
+function mergeResourceResults(...groups) {
+    const seen = new Set();
+    return groups.flat().filter((item) => {
+        if (isBlockedPublicResource(item)) return false;
+        const key = `${item.scope || "public"}:${item.resourceId || item.id || ""}:${item.chunkId || ""}`;
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+}
+
+function isBlockedPublicResource(resource = {}) {
+    const text = [
+        resource.title,
+        resource.path,
+        resource.chapter,
+        resource.section,
+        resource.contentPreview,
+        resource.resourceId,
+        resource.chunkId,
+        resource.metadata?.originalName,
+        resource.metadata?.fileName,
+        resource.metadata?.path,
+        resource.metadata?.folder,
+    ].filter(Boolean).join(" ").toLowerCase();
+
+    return BLOCKED_PUBLIC_RESOURCE_PATTERNS.some((pattern) => text.includes(pattern.toLowerCase()));
+}
+
+async function listPublicResourceRows(query = "") {
+    const client = requireSupabase();
+    const select = "id,name,type,scope,file_type,summary,tags,metadata,can_preview,can_download,can_reference,created_at,updated_at";
+    let request = client
+        .from("resources")
+        .select(select)
+        .eq("scope", "public")
+        .eq("type", "file")
+        .order("updated_at", { ascending: false })
+        .limit(query ? 200 : 50);
+
+    const { data, error } = await request;
+    if (error) throw error;
+
+    const trimmed = String(query || "").trim();
+    const normalized = (data || []).map(normalizePublicResourceRow);
+    if (!trimmed) return normalized;
+
+    const lower = trimmed.toLowerCase();
+    return normalized.filter((item) => {
+        const tagText = (item.tags || []).join(" ").toLowerCase();
+        const metadataText = [
+            item.metadata?.originalName,
+            item.metadata?.fileName,
+            item.metadata?.path,
+            item.metadata?.folder,
+        ].join(" ").toLowerCase();
+        return [item.title, item.contentPreview, item.path].join(" ").toLowerCase().includes(lower)
+            || tagText.includes(lower)
+            || metadataText.includes(lower);
+    });
 }
 
 export async function previewPublicResource(resource) {
-    if (resource?.source === DEMO_SOURCE || resource?.isDemo) {
-        return { ...resource, loading: false };
-    }
     if (!resource || resource.uploadStatus) {
         return { ...resource, loading: false };
     }

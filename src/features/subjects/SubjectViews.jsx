@@ -1,14 +1,17 @@
-export function SubjectView({ subject, subjectTab, setSubjectTab, conversations, startConversation, openConversation, resources, removeResource, reviews, updateSubject, saveSubject, deleteConversation, openRenameDialog }) {
+export function SubjectView({ subject, subjectTab, setSubjectTab, conversations, startConversation, openConversation, resources, removeResource, reviews, updateSubject, saveSubject, deleteConversation, openRenameDialog, uploadAttachment, webEnabled, setWebEnabled, openSource, openResource }) {
     return (
         <section className="view" id="view-subject">
-            <div className="topbar"><div className="top-title">{subject.name}</div><div className="top-actions"><button className="icon-btn">↗</button><button className="icon-btn">⋯</button></div></div>
+            <div className="topbar"><div className="top-title">{subject.name}</div><div className="top-actions"><button className="icon-btn" onClick={startConversation}>↗</button><button className="icon-btn" onClick={() => setSubjectTab("settings")}>⋯</button></div></div>
             <div className="content project-hero">
                 <div className="project-title">{subject.name}</div>
                 <div className="composer subject-quick">
-                    <button className="plus-btn">+</button>
+                    <label className="plus-btn">
+                        +
+                        <input type="file" hidden accept=".txt,.md,.pdf,.docx,.ppt,.pptx" onChange={uploadAttachment} />
+                    </label>
                     <input placeholder="在该学科中开始新对话" readOnly onFocus={startConversation} />
-                    <button className="plain-btn">联网</button>
-                    <button className="plain-btn">引用</button>
+                    <button className={`plain-btn ${webEnabled ? "active-soft" : ""}`} onClick={() => setWebEnabled((value) => !value)}>联网</button>
+                    <button className="plain-btn" onClick={openSource}>引用</button>
                     <button className="round-btn" onClick={startConversation}>▶</button>
                 </div>
                 <div className="tabs">
@@ -35,8 +38,8 @@ export function SubjectView({ subject, subjectTab, setSubjectTab, conversations,
                 )}
                 {subjectTab === "source" && (
                     <div className="subject-panel source-grid">
-                        <div className="card"><h3>本学科私有来源</h3>{resources.filter((item) => item.scope === "private").map((item) => <div className="file-row" key={item.id}><span>{item.title}</span><div className="file-actions"><button className="mini-btn">打开</button><button className="mini-btn" onClick={() => removeResource(item.id)}>移除</button></div></div>)}</div>
-                        <div className="card"><h3>引用的公共来源</h3>{resources.filter((item) => item.scope !== "private").map((item) => <div className="file-row" key={item.id}><span>{item.title}</span><div className="file-actions"><button className="mini-btn">打开</button><button className="mini-btn" onClick={() => removeResource(item.id)}>取消引用</button></div></div>)}</div>
+                        <div className="card"><h3>本学科私有来源</h3>{resources.filter((item) => item.scope === "private").map((item) => <div className="file-row" key={item.id}><span>{item.title}</span><div className="file-actions"><button className="mini-btn" onClick={() => openResource(item)}>打开</button><button className="mini-btn" onClick={() => removeResource(item.id)}>移除</button></div></div>)}</div>
+                        <div className="card"><h3>引用的公共来源</h3>{resources.filter((item) => item.scope !== "private").map((item) => <div className="file-row" key={item.id}><span>{item.title}</span><div className="file-actions"><button className="mini-btn" onClick={() => openResource(item)}>打开</button><button className="mini-btn" onClick={() => removeResource(item.id)}>取消引用</button></div></div>)}</div>
                     </div>
                 )}
                 {subjectTab === "reviews" && (
@@ -59,8 +62,6 @@ export function SubjectView({ subject, subjectTab, setSubjectTab, conversations,
     );
 }
 
-
-
 export function NewSubjectView({ draft, setDraft, createSubject }) {
     return (
         <section className="view" id="view-new-subject">
@@ -76,4 +77,3 @@ export function NewSubjectView({ draft, setDraft, createSubject }) {
         </section>
     );
 }
-
