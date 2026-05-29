@@ -1,5 +1,13 @@
 import { compactObject, getCurrentUserId, oneLine, requireSupabase } from "./coreDataApi";
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function assertRemoteConversationId(conversationId) {
+    if (!UUID_RE.test(String(conversationId || ""))) {
+        throw new Error("远端对话 id 必须是 UUID。");
+    }
+}
+
 function normalizeConversation(row) {
     if (!row) return null;
     return {
@@ -88,6 +96,7 @@ export async function updateConversation(id, patch = {}, options = {}) {
 }
 
 export async function listConversationMessages(conversationId, options = {}) {
+    assertRemoteConversationId(conversationId);
     const userId = await getCurrentUserId(options.userId);
     const { data, error } = await requireSupabase()
         .from("conversation_messages")
@@ -100,6 +109,7 @@ export async function listConversationMessages(conversationId, options = {}) {
 }
 
 export async function addConversationMessage(conversationId, message = {}, options = {}) {
+    assertRemoteConversationId(conversationId);
     const userId = await getCurrentUserId(options.userId);
     const content = String(message.content ?? message.text ?? "").trim();
     if (!content) throw new Error("消息内容不能为空。");

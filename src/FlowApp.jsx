@@ -1,9 +1,17 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import AuthPanel from "./components/AuthPanel";
-import { AIMessage } from "./components/MarkdownMessage";
+import { Sidebar } from "./components/layout/Sidebar";
+import { ActionDialog, FinishModal, PublicUploadModal, RenameDialog, ResourcePreviewModal, SourceModal, TaskDetailModal, TimerModal, UpdatePlanModal } from "./components/modals/FlowModals";
+import { ChatView, FreeChatView } from "./features/chat/ChatViews";
+import { LibraryView } from "./features/library/LibraryView";
+import { PlanView } from "./features/planning/PlanView";
+import { NewSubjectView, SubjectView } from "./features/subjects/SubjectViews";
+import { SettingsView } from "./features/settings/SettingsView";
 import { chatWithAI } from "./services/aiApi";
+import { askWithTempAttachments, uploadTempAttachment } from "./services/tempAttachmentApi";
 import { supabase } from "./services/supabaseClient";
 import { retrieveContext } from "./services/resourceApi";
+import { useLocalState } from "./hooks/useLocalState";
 import { usePublicResourceLibrary } from "./hooks/usePublicResourceLibrary";
 import {
     addConversationMessage,
@@ -41,46 +49,23 @@ import "./FlowApp.css";
 
 const uid = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
 const todayKey = () => new Date().toISOString().slice(0, 10);
+const DEMO_SOURCE = "demo";
+const DEMO_SUBJECT_ID = "subject-demo";
+const DEMO_SUBJECT_NAME = "范例：机器学习导论";
+const DEMO_PLAN_THEME = "范例：机器学习导论期末复习";
+const DEMO_PLANNING_ID = "conv-demo-ml-final";
+const DEMO_SUBJECT_CONVERSATION_ID = "subject-conv-demo-ml-final";
+const DEMO_GOAL = "两周内完成机器学习导论期末复习，重点掌握监督学习、模型评估、神经网络基础，并完成一份复习总结。";
 
 const DEFAULT_SUBJECTS = [
     {
-        id: "subject-demo",
-        name: "示例学科",
-        instruction: "这是示例学科的长期学习空间。回答时优先结合本学科来源资料、任务、对话记录和复盘历史。",
+        id: DEMO_SUBJECT_ID,
+        name: DEMO_SUBJECT_NAME,
+        instruction: "范例学科空间：围绕机器学习导论期末复习，回答时优先结合监督学习、模型评估、神经网络基础、往年题和复习总结资料。",
+        source: DEMO_SOURCE,
+        isDemo: true,
     },
 ];
-
-function readLocal(key, fallback) {
-    try {
-        const raw = window.localStorage.getItem(key);
-        return raw ? JSON.parse(raw) : fallback;
-    } catch {
-        return fallback;
-    }
-}
-
-function writeLocal(key, value) {
-    try {
-        window.localStorage.setItem(key, JSON.stringify(value));
-    } catch {
-        // Best effort local state.
-    }
-}
-
-function useLocalState(key, fallback) {
-    const [value, setValue] = useState(() => readLocal(key, fallback));
-    useEffect(() => writeLocal(key, value), [key, value]);
-    return [value, setValue];
-}
-
-function formatDate() {
-    return new Date().toLocaleDateString("zh-CN", {
-        year: "numeric",
-        month: "long",
-        day: "numeric",
-        weekday: "short",
-    });
-}
 
 function oneLine(value, max = 24) {
     const text = String(value || "").replace(/\s+/g, " ").trim();
@@ -120,6 +105,314 @@ function timeRangeFor(index) {
     return ranges[index % ranges.length];
 }
 
+function isDemoItem(item = {}) {
+    const id = String(item?.id || item?.resourceId || item?.resource_id || "");
+    return item?.source === DEMO_SOURCE
+        || item?.isDemo === true
+        || id === DEMO_SUBJECT_ID
+        || id.startsWith("conv-demo-")
+        || id.startsWith("subject-conv-demo-")
+        || id.startsWith("draft-demo-")
+        || id.startsWith("task-demo-")
+        || id.startsWith("resource-demo-");
+}
+
+function displayItems(items = [], demoItems = []) {
+    const list = Array.isArray(items) ? items : [];
+    const realItems = list.filter((item) => !isDemoItem(item));
+    if (realItems.length > 0) return realItems;
+    return list.length > 0 ? list : demoItems;
+}
+
+function demoTimestamp(offsetDays = 0, time = "09:00") {
+    return `${localDateKey(offsetDays)}T${time}:00`;
+}
+
+function demoPlanningConversations() {
+    return [{
+        id: DEMO_PLANNING_ID,
+        title: DEMO_PLAN_THEME,
+        createdAt: demoTimestamp(-1, "09:00"),
+        updatedAt: demoTimestamp(0, "09:20"),
+        source: DEMO_SOURCE,
+        isDemo: true,
+    }];
+}
+
+function demoSubjectConversations() {
+    return [{
+        id: DEMO_SUBJECT_CONVERSATION_ID,
+        title: "范例：薄弱知识点诊断",
+        createdAt: demoTimestamp(-1, "20:00"),
+        updatedAt: demoTimestamp(0, "20:20"),
+        source: DEMO_SOURCE,
+        isDemo: true,
+    }];
+}
+
+function demoPlanningMessages() {
+    return [
+        {
+            id: "msg-demo-planning-user-goal",
+            role: "user",
+            content: DEMO_GOAL,
+        },
+        {
+            id: "msg-demo-planning-assistant-breakdown",
+            role: "assistant",
+            content: "可以拆成五个环节：先梳理监督学习核心概念，再复习线性回归与逻辑回归；中段完成模型评估指标对比表；最后用一套往年题检验掌握度，并把错题与薄弱点整理成复习总结。",
+        },
+        {
+            id: "msg-demo-planning-user-weakness",
+            role: "user",
+            content: "我对 precision、recall、F1 和 ROC-AUC 的适用场景容易混淆，神经网络反向传播也只记得公式。",
+        },
+        {
+            id: "msg-demo-planning-assistant-plan",
+            role: "assistant",
+            content: "我会把模型评估单独安排成对比表任务，并把神经网络基础放在轻量回顾时段。每个任务都保留可交付成果，方便你在任务安排和学习日程里直接开始计时。",
+        },
+    ];
+}
+
+function demoSubjectMessages() {
+    return [
+        {
+            id: "msg-demo-subject-user",
+            role: "user",
+            content: "我已经看完监督学习讲义，但还不能判断不同评估指标该怎么选。",
+        },
+        {
+            id: "msg-demo-subject-assistant",
+            role: "assistant",
+            content: "建议从分类任务目标出发：类别不均衡时优先看 precision、recall 和 F1；需要比较排序能力时看 ROC-AUC；如果考试要求解释业务代价，可以补充混淆矩阵说明。",
+        },
+    ];
+}
+
+function demoPlanningDrafts(conversationId = DEMO_PLANNING_ID) {
+    const subject = DEMO_SUBJECT_NAME;
+    return [
+        {
+            id: "draft-demo-supervised-concepts",
+            conversationId,
+            title: "范例：整理监督学习核心概念",
+            date: localDateKey(0),
+            start: "09:00",
+            end: "10:30",
+            subject,
+            time: `${localDateKey(0)} 09:00-10:30`,
+            description: "梳理特征、标签、训练集、验证集、泛化误差、过拟合与正则化，输出一页复习提纲。",
+            status: "draft",
+            source: DEMO_SOURCE,
+            isDemo: true,
+        },
+        {
+            id: "draft-demo-regression-review",
+            conversationId,
+            title: "范例：复习线性回归与逻辑回归",
+            date: localDateKey(1),
+            start: "15:00",
+            end: "16:30",
+            subject,
+            time: `${localDateKey(1)} 15:00-16:30`,
+            description: "对比损失函数、决策边界、梯度下降和常见正则项，补齐推导与应用场景。",
+            status: "draft",
+            source: DEMO_SOURCE,
+            isDemo: true,
+        },
+        {
+            id: "draft-demo-metrics-table",
+            conversationId,
+            title: "范例：完成模型评估指标对比表",
+            date: localDateKey(2),
+            start: "20:00",
+            end: "21:00",
+            subject,
+            time: `${localDateKey(2)} 20:00-21:00`,
+            description: "制作 accuracy、precision、recall、F1、ROC-AUC 的适用场景、优缺点和考试例题对照表。",
+            status: "draft",
+            source: DEMO_SOURCE,
+            isDemo: true,
+        },
+        {
+            id: "draft-demo-past-paper",
+            conversationId,
+            title: "范例：做一套往年题",
+            date: localDateKey(3),
+            start: "14:30",
+            end: "16:30",
+            subject,
+            time: `${localDateKey(3)} 14:30-16:30`,
+            description: "按考试时间完成一套样题，标注不确定题目和需要回看讲义的位置。",
+            status: "draft",
+            source: DEMO_SOURCE,
+            isDemo: true,
+        },
+        {
+            id: "draft-demo-mistake-summary",
+            conversationId,
+            title: "范例：总结错题与薄弱点",
+            date: localDateKey(0),
+            start: "22:30",
+            end: "23:10",
+            subject,
+            time: `${localDateKey(0)} 22:30-23:10`,
+            description: "把往年题错因归类到概念、公式、建模和计算四类，并生成最后一轮复习清单。",
+            status: "draft",
+            source: DEMO_SOURCE,
+            isDemo: true,
+        },
+    ];
+}
+
+function demoLearningTasks() {
+    const subject = DEMO_SUBJECT_NAME;
+    return [
+        {
+            id: "task-demo-supervised-concepts",
+            title: "范例：整理监督学习核心概念",
+            subject,
+            date: localDateKey(0),
+            start: "09:00",
+            end: "10:30",
+            description: "输出一页监督学习概念提纲，标注容易混淆的定义。",
+            status: "doing",
+            priority: "high",
+            plannedDate: localDateKey(0),
+            startTime: "09:00",
+            endTime: "10:30",
+            source: DEMO_SOURCE,
+            isDemo: true,
+        },
+        {
+            id: "task-demo-regression-review",
+            title: "范例：复习线性回归与逻辑回归",
+            subject,
+            date: localDateKey(1),
+            start: "15:00",
+            end: "16:30",
+            description: "整理两类模型的目标函数、训练方式和考试高频问法。",
+            status: "pending",
+            priority: "high",
+            plannedDate: localDateKey(1),
+            startTime: "15:00",
+            endTime: "16:30",
+            source: DEMO_SOURCE,
+            isDemo: true,
+        },
+        {
+            id: "task-demo-metrics-table",
+            title: "范例：完成模型评估指标对比表",
+            subject,
+            date: localDateKey(2),
+            start: "20:00",
+            end: "21:00",
+            description: "用表格对比 accuracy、precision、recall、F1、ROC-AUC。",
+            status: "pending",
+            priority: "medium",
+            plannedDate: localDateKey(2),
+            startTime: "20:00",
+            endTime: "21:00",
+            source: DEMO_SOURCE,
+            isDemo: true,
+        },
+        {
+            id: "task-demo-past-paper",
+            title: "范例：做一套往年题",
+            subject,
+            date: localDateKey(3),
+            start: "14:30",
+            end: "16:30",
+            description: "模拟考试节奏完成样题，并记录不会的题型。",
+            status: "pending",
+            priority: "high",
+            plannedDate: localDateKey(3),
+            startTime: "14:30",
+            endTime: "16:30",
+            source: DEMO_SOURCE,
+            isDemo: true,
+        },
+        {
+            id: "task-demo-mistake-summary",
+            title: "范例：总结错题与薄弱点",
+            subject,
+            date: localDateKey(0),
+            start: "22:30",
+            end: "23:10",
+            description: "轻量复盘错题原因，形成最后一轮复习清单。",
+            status: "pending",
+            priority: "medium",
+            plannedDate: localDateKey(0),
+            startTime: "22:30",
+            endTime: "23:10",
+            source: DEMO_SOURCE,
+            isDemo: true,
+        },
+    ];
+}
+
+function demoSubjectResources() {
+    return [
+        {
+            id: "resource-demo-supervised-learning",
+            scope: "public",
+            title: "范例：课程讲义：监督学习基础",
+            resourceId: "resource-demo-supervised-learning",
+            chunkId: "lecture-01",
+            contentPreview: "监督学习的基本流程：数据划分、特征工程、模型训练、验证集调参与泛化误差评估。",
+            fileType: "PDF",
+            source: DEMO_SOURCE,
+            isDemo: true,
+        },
+        {
+            id: "resource-demo-metrics-note",
+            scope: "public",
+            title: "范例：笔记：模型评估指标",
+            resourceId: "resource-demo-metrics-note",
+            chunkId: "note-01",
+            contentPreview: "混淆矩阵、accuracy、precision、recall、F1 与 ROC-AUC 的选择逻辑和考试答题模板。",
+            fileType: "MD",
+            source: DEMO_SOURCE,
+            isDemo: true,
+        },
+        {
+            id: "resource-demo-past-paper",
+            scope: "public",
+            title: "范例：往年题：机器学习导论期末样题",
+            resourceId: "resource-demo-past-paper",
+            chunkId: "exam-01",
+            contentPreview: "包含监督学习、线性模型、模型评估和神经网络基础的综合样题。",
+            fileType: "PDF",
+            source: DEMO_SOURCE,
+            isDemo: true,
+        },
+        {
+            id: "resource-demo-neural-network-sheet",
+            scope: "public",
+            title: "范例：总结：神经网络基础速查表",
+            resourceId: "resource-demo-neural-network-sheet",
+            chunkId: "summary-01",
+            contentPreview: "前向传播、损失函数、反向传播、激活函数和过拟合控制的速查清单。",
+            fileType: "MD",
+            source: DEMO_SOURCE,
+            isDemo: true,
+        },
+    ];
+}
+
+function demoSubjectReviews() {
+    return [{
+        id: "review-demo-ml-final",
+        original: "范例：模型评估指标容易混淆，尤其是不平衡分类场景下 precision 与 recall 的取舍。",
+        harvest: "范例：用业务目标判断指标，先看漏报/误报代价，再选择 F1、ROC-AUC 或混淆矩阵解释。",
+        status: "confirmed",
+        conversationId: DEMO_SUBJECT_CONVERSATION_ID,
+        source: DEMO_SOURCE,
+        isDemo: true,
+    }];
+}
+
 function dateFromValue(value) {
     if (!value) return "";
     const text = String(value);
@@ -132,6 +425,49 @@ function timeFromValue(value) {
     const text = String(value);
     const match = text.match(/\b([01]\d|2[0-3]):([0-5]\d)\b/);
     return match ? match[0] : "";
+}
+
+function hasTimezone(value) {
+    return /(?:z|[+-]\d{2}:?\d{2})$/i.test(String(value || ""));
+}
+
+function datePartFromValue(value) {
+    if (!value) return "";
+    if (hasTimezone(value)) {
+        const date = new Date(value);
+        if (!Number.isNaN(date.getTime())) {
+            return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+        }
+    }
+    return dateFromValue(value);
+}
+
+function timePartFromValue(value) {
+    if (!value) return "";
+    if (hasTimezone(value)) {
+        const date = new Date(value);
+        if (!Number.isNaN(date.getTime())) {
+            return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+        }
+    }
+    return timeFromValue(value);
+}
+
+function localDateTimeWithOffset(date, time) {
+    const datePart = date || todayKey();
+    const timePart = time || "00:00";
+    const offsetMinutes = -new Date(`${datePart}T${timePart}:00`).getTimezoneOffset();
+    const sign = offsetMinutes >= 0 ? "+" : "-";
+    const abs = Math.abs(offsetMinutes);
+    const hh = String(Math.floor(abs / 60)).padStart(2, "0");
+    const mm = String(abs % 60).padStart(2, "0");
+    return `${datePart}T${timePart}:00${sign}${hh}:${mm}`;
+}
+
+function mergeById(remoteItems, localItems, isLocalItem) {
+    const seen = new Set(remoteItems.flatMap((item) => [item.id, item.remoteId, item.clientId].filter(Boolean)));
+    const preservedLocal = (localItems || []).filter((item) => isLocalItem(item) && !seen.has(item.id));
+    return [...remoteItems, ...preservedLocal];
 }
 
 function toLocalTask(row) {
@@ -159,9 +495,9 @@ function toLocalDraft(row, subjects = []) {
     const subject = subjects.find((item) => item.id === row?.subjectId || item.id === row?.subject_id);
     const plannedStart = row?.plannedStart || row?.planned_start || "";
     const plannedEnd = row?.plannedEnd || row?.planned_end || "";
-    const date = dateFromValue(plannedStart) || meta.date || todayKey();
-    const start = timeFromValue(plannedStart) || meta.start || "19:00";
-    const end = timeFromValue(plannedEnd) || meta.end || "20:00";
+    const date = datePartFromValue(plannedStart) || meta.date || todayKey();
+    const start = timePartFromValue(plannedStart) || meta.start || "19:00";
+    const end = timePartFromValue(plannedEnd) || meta.end || "20:00";
     return {
         id: row?.id || `draft-${uid()}`,
         conversationId: row?.conversationId || row?.planning_conversation_id || "",
@@ -224,9 +560,9 @@ export default function FlowApp() {
     const [activeSubjectId, setActiveSubjectId] = useLocalState("flow.activeSubjectId", DEFAULT_SUBJECTS[0].id);
     const [freeConversations, setFreeConversations] = useLocalState("flow.freeConversations", []);
     const [subjectConversations, setSubjectConversations] = useLocalState("flow.subjectConversations", {});
-    const [planningConversations, setPlanningConversations] = useLocalState("flow.planningConversations", [makeConversation("规划对话")]);
+    const [planningConversations, setPlanningConversations] = useLocalState("flow.planningConversations", demoPlanningConversations());
     const [activeFreeId, setActiveFreeId] = useLocalState("flow.activeFreeId", "");
-    const [activePlanningId, setActivePlanningId] = useLocalState("flow.activePlanningId", "");
+    const [activePlanningId, setActivePlanningId] = useLocalState("flow.activePlanningId", DEMO_PLANNING_ID);
     const [activeSubjectConversationId, setActiveSubjectConversationId] = useLocalState("flow.activeSubjectConversationId", "");
     const [messages, setMessages] = useLocalState("flow.messages", {});
     const [draftsByConversation, setDraftsByConversation] = useLocalState("flow.draftsByConversation", {});
@@ -235,13 +571,15 @@ export default function FlowApp() {
     const [subjectReviews, setSubjectReviews] = useLocalState("flow.subjectReviews", {});
     const [privateResources, setPrivateResources] = useState([]);
     const [modal, setModal] = useState("");
+    const [detailTask, setDetailTask] = useState(null);
     const [actionDialog, setActionDialog] = useState(null);
     const [renameDialog, setRenameDialog] = useState(null);
     const [sourceQuery, setSourceQuery] = useState("");
     const [sourceResults, setSourceResults] = useState([]);
     const [selectedReferences, setSelectedReferences] = useLocalState("flow.selectedReferences", []);
-    const webEnabled = true;
-    const setWebEnabled = () => {};
+    const [webEnabled, setWebEnabled] = useLocalState("flow.webEnabled", true);
+    const [tempAttachments, setTempAttachments] = useLocalState("flow.tempAttachments", []);
+    const [selectedAttachmentIds, setSelectedAttachmentIds] = useLocalState("flow.selectedAttachmentIds", []);
     const [aiStatus, setAiStatus] = useState("idle");
     const [aiError, setAiError] = useState("");
     const {
@@ -282,25 +620,46 @@ export default function FlowApp() {
         taskId: "",
         taskRemoteId: "",
         subjectId: "",
+        isDemoTask: false,
+        mode: "stopwatch",
+        pomodoroPhase: "focus",
     });
     const [finishForm, setFinishForm] = useState({ status: "done", note: "" });
 
+    const displaySubjects = displayItems(subjects, DEFAULT_SUBJECTS);
+    const displayPlanningConversations = displayItems(planningConversations, demoPlanningConversations());
     const activeSubject = useMemo(
-        () => subjects.find((subject) => subject.id === activeSubjectId) || subjects[0] || DEFAULT_SUBJECTS[0],
-        [activeSubjectId, subjects],
+        () => displaySubjects.find((subject) => subject.id === activeSubjectId) || displaySubjects[0] || DEFAULT_SUBJECTS[0],
+        [activeSubjectId, displaySubjects],
     );
-    const activePlanningConversation = planningConversations.find((item) => item.id === activePlanningId) || planningConversations[0];
+    const activePlanningConversation = displayPlanningConversations.find((item) => item.id === activePlanningId) || displayPlanningConversations[0];
     const planningConversationId = activePlanningConversation?.id || "";
-    const currentDrafts = draftsByConversation[planningConversationId] || [];
-    const currentSubjectConversations = subjectConversations[activeSubject?.id] || [];
-    const currentSubjectResources = subjectResources[activeSubject?.id] || [];
-    const currentReviews = subjectReviews[activeSubject?.id] || [];
+    const storedDrafts = draftsByConversation[planningConversationId] || [];
+    const currentDrafts = isDemoItem(activePlanningConversation)
+        ? displayItems(storedDrafts, demoPlanningDrafts(planningConversationId))
+        : storedDrafts;
+    const storedSubjectConversations = subjectConversations[activeSubject?.id] || [];
+    const currentSubjectConversations = isDemoItem(activeSubject)
+        ? displayItems(storedSubjectConversations, demoSubjectConversations())
+        : storedSubjectConversations;
+    const storedSubjectResources = subjectResources[activeSubject?.id] || [];
+    const currentSubjectResources = isDemoItem(activeSubject)
+        ? displayItems(storedSubjectResources, demoSubjectResources())
+        : storedSubjectResources;
+    const storedReviews = subjectReviews[activeSubject?.id] || [];
+    const currentReviews = isDemoItem(activeSubject)
+        ? displayItems(storedReviews, demoSubjectReviews())
+        : storedReviews;
+    const displayTasks = displayItems(tasks, demoLearningTasks());
     const freeConversation = freeConversations.find((item) => item.id === activeFreeId);
     const subjectConversation = currentSubjectConversations.find((item) => item.id === activeSubjectConversationId);
     const chatKey = view === "free-chat"
         ? `free:${activeFreeId || "new"}`
         : `subject:${activeSubjectConversationId || activeSubject?.id}`;
-    const visibleMessages = messages[chatKey] || [];
+    const visibleMessages = messages[chatKey]
+        || (isDemoItem(subjectConversation) ? demoSubjectMessages() : []);
+    const planningMessages = messages[`planning:${planningConversationId}`]
+        || (isDemoItem(activePlanningConversation) ? demoPlanningMessages() : []);
 
     useEffect(() => {
         setFreeConversations((prev) => prev.filter((conversation) => (
@@ -331,20 +690,18 @@ export default function FlowApp() {
         setSubjects((prev) => {
             let changed = false;
             const next = prev.map((subject) => {
-                if (subject.id === "subject-vision" || subject.name === "视力学") {
+                if (subject.id === "subject-vision" || subject.name === "视力学" || subject.name === "示例学科" || isDemoItem(subject)) {
                     changed = true;
                     return {
-                        ...subject,
-                        id: subject.id === "subject-vision" ? "subject-demo" : subject.id,
-                        name: "示例学科",
-                        instruction: subject.instruction?.replaceAll?.("视力学", "示例学科") || DEFAULT_SUBJECTS[0].instruction,
+                        ...DEFAULT_SUBJECTS[0],
+                        id: DEMO_SUBJECT_ID,
                     };
                 }
                 return subject;
             });
             return changed ? next : prev;
         });
-        if (activeSubjectId === "subject-vision") setActiveSubjectId("subject-demo");
+        if (activeSubjectId === "subject-vision") setActiveSubjectId(DEMO_SUBJECT_ID);
     }, [activeSubjectId, setActiveSubjectId, setSubjects]);
 
     useEffect(() => {
@@ -369,12 +726,25 @@ export default function FlowApp() {
         if (!timer.running || !timer.startedAt) return undefined;
         const id = window.setInterval(() => {
             const seconds = Math.max(0, Math.floor((Date.now() - new Date(timer.startedAt).getTime()) / 1000));
+            if (timer.mode === "pomodoro") {
+                const phase = timer.pomodoroPhase || "focus";
+                const limit = phase === "rest" ? 5 * 60 : 25 * 60;
+                if (seconds >= limit) {
+                    setTimer((prev) => ({
+                        ...prev,
+                        pomodoroPhase: phase === "rest" ? "focus" : "rest",
+                        startedAt: new Date().toISOString(),
+                        elapsed: "00:00",
+                    }));
+                    return;
+                }
+            }
             const mm = String(Math.floor(seconds / 60)).padStart(2, "0");
             const ss = String(seconds % 60).padStart(2, "0");
             setTimer((prev) => ({ ...prev, elapsed: `${mm}:${ss}` }));
         }, 1000);
         return () => window.clearInterval(id);
-    }, [timer.running, timer.startedAt]);
+    }, [timer.running, timer.startedAt, timer.mode, timer.pomodoroPhase]);
 
     useEffect(() => {
         if (!currentUser) return;
@@ -393,30 +763,33 @@ export default function FlowApp() {
         ]).then(async ([subjectRows, freeRows, planningRows]) => {
             if (!alive) return;
             if (subjectRows.length) {
-                setSubjects(subjectRows.map((item) => ({
+                const remoteSubjects = subjectRows.map((item) => ({
                     id: item.id,
                     name: item.name,
                     instruction: item.instruction || "",
-                })));
+                }));
+                setSubjects((prev) => mergeById(remoteSubjects, prev, (item) => String(item.id || "").startsWith("subject-")));
                 if (!subjectRows.some((item) => item.id === activeSubjectId)) {
                     setActiveSubjectId(subjectRows[0].id);
                 }
             }
             if (freeRows.length) {
-                setFreeConversations(freeRows.filter((item) => !isBlankConversationTitle(item.title)).map((item) => ({
+                const remoteFree = freeRows.filter((item) => !isBlankConversationTitle(item.title)).map((item) => ({
                     id: item.id,
                     title: item.title || "最近对话",
                     createdAt: item.createdAt,
                     updatedAt: item.updatedAt,
-                })));
+                }));
+                setFreeConversations((prev) => mergeById(remoteFree, prev, (item) => isLocalConversationId(item.id)));
             }
             if (planningRows.length) {
-                setPlanningConversations(planningRows.filter((item) => !isBlankConversationTitle(item.title)).map((item) => ({
+                const remotePlanning = planningRows.filter((item) => !isBlankConversationTitle(item.title)).map((item) => ({
                     id: item.id,
                     title: item.title || "规划对话",
                     createdAt: item.createdAt,
                     updatedAt: item.updatedAt,
-                })));
+                }));
+                setPlanningConversations((prev) => mergeById(remotePlanning, prev, (item) => isLocalConversationId(item.id)));
                 if (!activePlanningId) setActivePlanningId(planningRows[0].id);
             }
         });
@@ -428,7 +801,8 @@ export default function FlowApp() {
         listLearningTasks({ userId: currentUser.id, limit: 200 })
             .then((rows) => {
                 if (!rows.length) return;
-                setTasks(rows.map(toLocalTask));
+                const remoteTasks = rows.map(toLocalTask);
+                setTasks((prev) => mergeById(remoteTasks, prev, (item) => !item.remoteId));
             })
             .catch(() => null);
     }, [currentUser?.id, setTasks]);
@@ -476,7 +850,7 @@ export default function FlowApp() {
     }, [currentUser?.id, planningConversationId, setDraftsByConversation, subjects]);
 
     useEffect(() => {
-        if (!currentUser?.id || !activeFreeId) return;
+        if (!currentUser?.id || !activeFreeId || isLocalConversationId(activeFreeId)) return;
         listConversationMessages(activeFreeId, { userId: currentUser.id })
             .then((rows) => {
                 if (!rows.length) return;
@@ -494,7 +868,7 @@ export default function FlowApp() {
     }, [activeFreeId, currentUser?.id, setMessages]);
 
     useEffect(() => {
-        if (!currentUser?.id || !activeSubjectConversationId) return;
+        if (!currentUser?.id || !activeSubjectConversationId || isLocalConversationId(activeSubjectConversationId)) return;
         listConversationMessages(activeSubjectConversationId, { userId: currentUser.id })
             .then((rows) => {
                 if (!rows.length) return;
@@ -512,7 +886,7 @@ export default function FlowApp() {
     }, [activeSubjectConversationId, currentUser?.id, setMessages]);
 
     useEffect(() => {
-        if (!currentUser?.id || !planningConversationId) return;
+        if (!currentUser?.id || !planningConversationId || isLocalConversationId(planningConversationId)) return;
         listConversationMessages(planningConversationId, { userId: currentUser.id })
             .then((rows) => {
                 if (!rows.length) return;
@@ -798,10 +1172,14 @@ export default function FlowApp() {
     }
 
     function saveActiveSubjectSettings() {
-        if (!currentUser?.id || !activeSubject?.id || String(activeSubject.id).startsWith("subject-")) return;
-        updateSubjectRecord(activeSubject, { userId: currentUser.id })
+        if (!currentUser?.id || !activeSubject?.id) return;
+        const save = String(activeSubject.id).startsWith("subject-")
+            ? createSubjectRecord({ name: activeSubject.name, instruction: activeSubject.instruction || "" }, { userId: currentUser.id })
+            : updateSubjectRecord(activeSubject, { userId: currentUser.id });
+        save
             .then((saved) => {
-                setSubjects((prev) => prev.map((item) => (item.id === saved.id ? { ...item, ...saved } : item)));
+                setSubjects((prev) => prev.map((item) => (item.id === activeSubject.id || item.id === saved.id ? { ...item, ...saved } : item)));
+                setActiveSubjectId(saved.id);
                 setNotice("学科设置已保存");
             })
             .catch((error) => setNotice(error?.message || "学科设置保存失败"));
@@ -821,6 +1199,85 @@ export default function FlowApp() {
             subjectId: activeSubject?.id,
             maxChars: 6000,
         }).catch(() => ({ contextText: "", citations: [] }));
+    }
+
+    async function uploadChatAttachment(event) {
+        const file = event.target.files?.[0];
+        if (!file) return;
+        if (!currentUser) {
+            openAuth();
+            event.target.value = "";
+            return;
+        }
+        try {
+            const uploaded = await uploadTempAttachment(file, currentUser);
+            setTempAttachments((prev) => [uploaded, ...prev]);
+            setSelectedAttachmentIds((prev) => [uploaded.id, ...prev.filter((id) => id !== uploaded.id)]);
+            setNotice("附件已加入本次 AI 对话");
+        } catch (error) {
+            setNotice(error?.message || "附件上传失败");
+        } finally {
+            event.target.value = "";
+        }
+    }
+
+    function selectedTempAttachments() {
+        const selected = new Set(selectedAttachmentIds);
+        return tempAttachments.filter((item) => selected.has(item.id));
+    }
+
+    async function askAIWithOptionalAttachments({ text, history, context, conversationType, subjectId, subjectInstruction, draftContext }) {
+        const webSearch = { enabled: webEnabled, mode: webEnabled ? "always" : "auto", topK: 5 };
+        const attachments = selectedTempAttachments();
+        if (attachments.length) {
+            const question = conversationType === "planning"
+                ? [
+                    text,
+                    "",
+                    "请结合附件、引用资料和联网结果制定学习计划。回答中先给自然语言建议，最后附加一个合法 JSON 对象：",
+                    '{"drafts":[{"title":"","subjectName":"","description":"","plannedStart":"","plannedEnd":""}]}',
+                    "每个 drafts 项都要有明确任务标题、学科、说明、开始时间和结束时间。",
+                ].join("\n")
+                : text;
+            const result = await askWithTempAttachments({
+                question,
+                attachments,
+                selectedAttachmentIds,
+                contextText: context.contextText,
+                references: selectedReferences,
+                webSearch,
+            });
+            return {
+                reply: result.answer,
+                citations: [...(context.citations || []), ...(result.citations || [])],
+                webCitations: result.webCitations || [],
+                drafts: conversationType === "planning" ? extractDraftsFromText(result.answer) : [],
+            };
+        }
+        return chatWithAI({
+            message: text,
+            history,
+            contextText: context.contextText,
+            mode: "answer",
+            conversationType,
+            subjectId,
+            subjectInstruction,
+            selectedReferences,
+            draftContext,
+            webSearch,
+            returnFullResponse: true,
+        });
+    }
+
+    function extractDraftsFromText(text) {
+        const match = String(text || "").match(/\{[\s\S]*"drafts"[\s\S]*\}/);
+        if (!match) return [];
+        try {
+            const parsed = JSON.parse(match[0]);
+            return Array.isArray(parsed?.drafts) ? parsed.drafts : [];
+        } catch {
+            return [];
+        }
     }
 
     function draftsFromAI(rawDrafts, conversationId, fallbackText, replyText = "", defaultSubject = activeSubject?.name) {
@@ -913,17 +1370,13 @@ export default function FlowApp() {
         await saveConversationMessage(conversationId, userMessage);
         try {
             const context = await buildReferenceContext(text);
-            const result = await chatWithAI({
-                message: text,
+            const result = await askAIWithOptionalAttachments({
+                text,
                 history,
-                contextText: context.contextText,
-                mode: "answer",
+                context,
                 conversationType: view === "free-chat" ? "free" : "subject",
                 subjectId: view === "chat" ? activeSubject?.id : null,
                 subjectInstruction: view === "chat" ? activeSubject?.instruction : "",
-                selectedReferences,
-                webSearch: { enabled: true, mode: "always", topK: 5 },
-                returnFullResponse: true,
             });
             const assistantMessage = {
                 id: `msg-${uid()}`,
@@ -985,13 +1438,13 @@ export default function FlowApp() {
         setAiError("");
         await saveConversationMessage(conversationId, userMessage);
         try {
-            const result = await chatWithAI({
-                message: text,
+            const context = await buildReferenceContext(text);
+            const result = await askAIWithOptionalAttachments({
+                text,
                 history,
+                context,
                 conversationType: "planning",
                 draftContext: { existingDraftCount: (draftsByConversation[conversationId] || []).length },
-                webSearch: { enabled: true, mode: "always", topK: 5 },
-                returnFullResponse: true,
             });
             const assistantMessage = { id: `msg-${uid()}`, role: "assistant", content: result.reply };
             const nextDrafts = draftsFromAI(result.drafts, conversationId, text, result.reply, activeSubject.name);
@@ -1012,11 +1465,21 @@ export default function FlowApp() {
                         subjectId: subject?.id || null,
                         title: draft.title,
                         description: draft.description,
-                        plannedStart: `${draft.date}T${draft.start}:00`,
-                        plannedEnd: `${draft.date}T${draft.end}:00`,
+                        plannedStart: localDateTimeWithOffset(draft.date, draft.start),
+                        plannedEnd: localDateTimeWithOffset(draft.date, draft.end),
                         status: draft.status,
                         metadata: { clientId: draft.id, subject: draft.subject, date: draft.date, start: draft.start, end: draft.end },
-                    }, { userId: currentUser.id }).catch(() => null);
+                    }, { userId: currentUser.id })
+                        .then((saved) => {
+                            if (!saved?.id) return;
+                            setDraftsByConversation((prev) => ({
+                                ...prev,
+                                [conversationId]: (prev[conversationId] || []).map((item) => (
+                                    item.id === draft.id ? { ...item, id: saved.id, remoteId: saved.id } : item
+                                )),
+                            }));
+                        })
+                        .catch(() => null);
                 });
             }
             await saveConversationMessage(conversationId, assistantMessage);
@@ -1037,28 +1500,37 @@ export default function FlowApp() {
     }
 
     function confirmDraft(draft) {
+        const fromDemo = isDemoItem(draft);
         const task = {
             id: `task-${uid()}`,
             title: draft.title,
             subject: draft.subject || activeSubject.name,
+            subjectId: draft.subjectId || activeSubject.id,
             date: draft.date || todayKey(),
             start: draft.start || "19:00",
             end: draft.end || "20:00",
             description: draft.description,
             status: "pending",
+            source: fromDemo ? "manual" : "planning-draft",
+            plannedDate: draft.date || todayKey(),
+            startTime: draft.start || "19:00",
+            endTime: draft.end || "20:00",
+            slot: `${draft.start || "19:00"}-${draft.end || "20:00"}`,
+            draftId: fromDemo ? "" : draft.id,
         };
         setTasks((prev) => [task, ...prev]);
-        if (currentUser?.id) {
+        if (currentUser?.id && !fromDemo) {
             const subject = subjects.find((item) => item.name === task.subject);
             createLearningTask({
                 ...task,
                 clientId: task.id,
                 subjectId: subject?.id || null,
+                draftId: draft.id,
                 conversationId: isLocalConversationId(draft.conversationId) ? null : draft.conversationId,
                 plannedDate: task.date,
                 slot: `${task.start}-${task.end}`,
                 source: "planning-draft",
-                metadata: { description: task.description, start: task.start, end: task.end },
+                metadata: { description: task.description, start: task.start, end: task.end, draftClientId: draft.id },
             }, { userId: currentUser.id })
                 .then((saved) => {
                     setTasks((prev) => prev.map((item) => (item.id === task.id ? { ...item, remoteId: saved.id } : item)));
@@ -1081,6 +1553,9 @@ export default function FlowApp() {
             ...prev,
             [draft.conversationId]: (prev[draft.conversationId] || []).filter((item) => item.id !== draft.id),
         }));
+        if (currentUser?.id && draft?.id && !String(draft.id).startsWith("draft-")) {
+            updatePlanningDraft(draft.id, { status: "deleted" }, { userId: currentUser.id }).catch(() => null);
+        }
     }
 
     function createSubjectQuick(name) {
@@ -1163,6 +1638,9 @@ export default function FlowApp() {
             taskId: task?.id || "",
             taskRemoteId: task?.remoteId || "",
             subjectId: task?.subjectId || activeSubject.id,
+            isDemoTask: isDemoItem(task),
+            mode: timer.mode || "stopwatch",
+            pomodoroPhase: timer.pomodoroPhase || "focus",
         });
         setFinishForm({ status: "done", note: "" });
         setModal("timer");
@@ -1177,6 +1655,9 @@ export default function FlowApp() {
             taskTitle: prev.taskTitle || "当前学习",
             subject: prev.subject || activeSubject.name,
             subjectId: prev.subjectId || activeSubject.id,
+            isDemoTask: false,
+            mode: prev.mode || "stopwatch",
+            pomodoroPhase: prev.pomodoroPhase || "focus",
         }));
         setModal("timer");
     }
@@ -1206,7 +1687,7 @@ export default function FlowApp() {
 
     async function openPrivateResource(resource) {
         try {
-            const { signedUrl } = await createPrivateResourceSignedUrl(resource.id || resource.resourceId, currentUser?.id);
+            const { signedUrl } = await createPrivateResourceSignedUrl(resource.resourceId || resource.id, currentUser?.id);
             window.open(signedUrl, "_blank", "noopener,noreferrer");
         } catch {
             setNotice("无法打开该资料");
@@ -1227,7 +1708,7 @@ export default function FlowApp() {
             ...prev,
             [activeSubject.id]: [item, ...(prev[activeSubject.id] || [])],
         }));
-        if (currentUser?.id && activeSubject?.id && !String(activeSubject.id).startsWith("subject-")) {
+        if (!isDemoItem(resource) && currentUser?.id && activeSubject?.id && !String(activeSubject.id).startsWith("subject-")) {
             addSubjectResourceRecord(activeSubject.id, item, { userId: currentUser.id })
                 .then((saved) => {
                     setSubjectResources((prev) => ({
@@ -1250,6 +1731,15 @@ export default function FlowApp() {
         }
     }
 
+    function openSubjectResource(resource) {
+        if (!resource) return;
+        if (resource.scope === "private") {
+            openPrivateResource(resource);
+            return;
+        }
+        openPublicResource(resource);
+    }
+
     function minutesFromElapsed(value) {
         const [mm = "0", ss = "0"] = String(value || "0:00").split(":");
         return Math.max(1, Number(mm) + (Number(ss) > 0 ? 1 : 0));
@@ -1264,7 +1754,7 @@ export default function FlowApp() {
                 task.id === timer.taskId ? { ...task, status: taskStatus, done: taskStatus === "done" } : task
             )));
         }
-        if (currentUser?.id) {
+        if (currentUser?.id && !timer.isDemoTask) {
             const subject = subjects.find((item) => item.id === timer.subjectId || item.name === timer.subject);
             const session = {
                 clientId: `session-${uid()}`,
@@ -1317,12 +1807,38 @@ export default function FlowApp() {
         setModal("update-plan");
     }
 
+    function confirmCurrentReviews() {
+        if (!activeSubject?.id) return;
+        const pending = currentReviews.filter((item) => item.status !== "confirmed");
+        if (!pending.length) return;
+        setSubjectReviews((prev) => ({
+            ...prev,
+            [activeSubject.id]: (prev[activeSubject.id] || []).map((item) => (
+                item.status === "confirmed" ? item : { ...item, status: "confirmed" }
+            )),
+        }));
+        if (currentUser?.id && !String(activeSubject.id).startsWith("subject-")) {
+            pending.forEach((item) => {
+                upsertSubjectReview({
+                    id: String(item.id || "").startsWith("review-") ? undefined : item.id,
+                    subjectId: activeSubject.id,
+                    conversationId: item.conversationId || null,
+                    originalText: item.original || item.originalText || "",
+                    harvestText: item.harvest || item.harvestText || item.polishedText || "",
+                    status: "confirmed",
+                    metadata: item.metadata || {},
+                }, { userId: currentUser.id }).catch(() => null);
+            });
+        }
+        setNotice("复盘收获已确认入库");
+    }
+
     return (
         <div className="app">
             <Sidebar
                 view={view}
                 setView={setView}
-                subjects={subjects}
+                subjects={displaySubjects}
                 activeSubjectId={activeSubjectId}
                 openSubject={openSubject}
                 freeConversations={freeConversations}
@@ -1341,24 +1857,34 @@ export default function FlowApp() {
                     <PlanView
                         planTab={planTab}
                         setPlanTab={setPlanTab}
-                        conversations={planningConversations}
+                        conversations={displayPlanningConversations}
                         activeId={planningConversationId}
                         setActiveId={setActivePlanningId}
                         newConversation={newPlanningConversation}
                         drafts={currentDrafts}
                         confirmDraft={confirmDraft}
                         deleteDraft={deleteDraft}
+                        openTaskDetail={(task) => {
+                            setDetailTask(task);
+                            setModal("task-detail");
+                        }}
                         deleteConversation={deletePlanningConversation}
                         openRenameDialog={setRenameDialog}
                         input={input}
                         setInput={setInput}
                         sendPlanningMessage={sendPlanningMessage}
-                        messages={messages[`planning:${planningConversationId}`] || []}
+                        messages={planningMessages.length > 0 ? planningMessages : (messages[`planning:${planningConversationId}`] || [])}
+                        openSource={() => setModal("source")}
+                        selectedReferences={selectedReferences}
+                        webEnabled={webEnabled}
+                        setWebEnabled={setWebEnabled}
+                        uploadAttachment={uploadChatAttachment}
+                        attachmentCount={selectedAttachmentIds.length}
                         taskForm={taskForm}
                         setTaskForm={setTaskForm}
                         saveTask={saveTask}
-                        tasks={tasks}
-                        subjects={subjects}
+                        tasks={displayTasks}
+                        subjects={displaySubjects}
                         startTimer={startTimer}
                         createSubject={createSubjectQuick}
                         aiStatus={aiStatus}
@@ -1398,6 +1924,11 @@ export default function FlowApp() {
                         saveSubject={saveActiveSubjectSettings}
                         deleteConversation={deleteSubjectConversation}
                         openRenameDialog={setRenameDialog}
+                        uploadAttachment={uploadChatAttachment}
+                        webEnabled={webEnabled}
+                        setWebEnabled={setWebEnabled}
+                        openSource={() => setModal("source")}
+                        openResource={openSubjectResource}
                     />
                 )}
                 {view === "chat" && (
@@ -1414,11 +1945,14 @@ export default function FlowApp() {
                         openTimer={() => setModal("timer")}
                         finish={() => setModal("finish")}
                         reviews={currentReviews}
+                        confirmReviews={confirmCurrentReviews}
                         aiStatus={aiStatus}
                         aiError={aiError}
                         webEnabled={webEnabled}
                         setWebEnabled={setWebEnabled}
                         selectedReferences={selectedReferences}
+                        uploadAttachment={uploadChatAttachment}
+                        attachmentCount={selectedAttachmentIds.length}
                         onRename={() => activeSubjectConversationId && setRenameDialog({ type: "subject", id: activeSubjectConversationId, title: subjectConversation?.title || "新对话" })}
                     />
                 )}
@@ -1435,6 +1969,8 @@ export default function FlowApp() {
                         webEnabled={webEnabled}
                         setWebEnabled={setWebEnabled}
                         selectedReferences={selectedReferences}
+                        uploadAttachment={uploadChatAttachment}
+                        attachmentCount={selectedAttachmentIds.length}
                         onRename={() => activeFreeId && setRenameDialog({ type: "free", id: activeFreeId, title: freeConversation?.title || "新对话" })}
                     />
                 )}
@@ -1470,8 +2006,12 @@ export default function FlowApp() {
             />
             <TaskDetailModal
                 open={modal === "task-detail"}
-                task={tasks[0]}
+                task={detailTask || tasks[0]}
                 close={() => setModal("")}
+                startTimer={(task) => {
+                    setModal("");
+                    startTimer(task);
+                }}
             />
             <FinishModal
                 open={modal === "finish"}
@@ -1507,7 +2047,7 @@ export default function FlowApp() {
             />
             <ActionDialog
                 dialog={actionDialog}
-                subjects={subjects}
+                subjects={displaySubjects}
                 close={() => setActionDialog(null)}
                 openRenameDialog={setRenameDialog}
                 onDeleteSubject={(subjectId) => {
@@ -1535,719 +2075,3 @@ export default function FlowApp() {
     );
 }
 
-function ActionDialog({ dialog, subjects, close, openRenameDialog, onDeleteSubject, onDeleteConversation, onMoveConversation }) {
-    if (!dialog) return null;
-    const isSubject = dialog.type === "subject";
-    const title = isSubject ? "学科操作" : "最近对话操作";
-
-    return (
-        <div className="modal-backdrop" onClick={close}>
-            <div className="modal action-modal" onClick={(event) => event.stopPropagation()}>
-                <div className="modal-head">
-                    <span>{title}</span>
-                    <button className="icon-btn" onClick={close}>×</button>
-                </div>
-                <div className="modal-body modal-stack">
-                    {isSubject ? (
-                        <>
-                            <p className="muted">当前学科：{dialog.subject.name}</p>
-                            <div className="button-row right">
-                                <button className="plain-btn danger-btn" onClick={() => onDeleteSubject(dialog.subject.id)}>删除学科</button>
-                            </div>
-                        </>
-                    ) : (
-                        <>
-                            <p className="muted">当前对话：{dialog.conversation.title}</p>
-                            <div className="button-row">
-                                <button className="plain-btn" onClick={() => { openRenameDialog({ type: "free", id: dialog.conversation.id, title: dialog.conversation.title }); close(); }}>改名</button>
-                                <button className="plain-btn danger-btn" onClick={() => onDeleteConversation(dialog.conversation.id)}>删除对话</button>
-                            </div>
-                            <div className="modal-stack">
-                                <strong>移动至学科</strong>
-                                <div className="dialog-action-list">
-                                    {subjects.map((subject) => (
-                                        <button className="plain-btn" key={subject.id} onClick={() => onMoveConversation(dialog.conversation.id, subject.id)}>
-                                            移动到{subject.name}
-                                        </button>
-                                    ))}
-                                </div>
-                            </div>
-                        </>
-                    )}
-                </div>
-            </div>
-        </div>
-    );
-}
-
-function RenameDialog({ dialog, close, submit }) {
-    if (!dialog) return null;
-    return <RenameDialogContent key={`${dialog.type}:${dialog.id}`} dialog={dialog} close={close} submit={submit} />;
-}
-
-function RenameDialogContent({ dialog, close, submit }) {
-    const [title, setTitle] = useState(dialog?.title || "");
-    return (
-        <div className="modal-backdrop" onClick={close}>
-            <div className="modal action-modal" onClick={(event) => event.stopPropagation()}>
-                <div className="modal-head"><span>修改名称</span><button className="icon-btn" onClick={close}>×</button></div>
-                <div className="modal-body modal-stack">
-                    <input className="new-subject-input" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="输入对话名称" autoFocus />
-                    <div className="button-row right">
-                        <button className="plain-btn" onClick={close}>取消</button>
-                        <button className="primary-btn" onClick={() => submit(dialog, title)}>保存</button>
-                    </div>
-                </div>
-            </div>
-        </div>
-    );
-}
-
-function ResourcePreviewModal({ resource, close, addResource, downloadPublicResource }) {
-    if (!resource) return null;
-    return (
-        <div className="modal-backdrop" onClick={close}>
-            <div className="modal resource-preview-modal" onClick={(event) => event.stopPropagation()}>
-                <div className="modal-head">
-                    <span>{resource.title || "资料预览"}</span>
-                    <button className="icon-btn" onClick={close}>×</button>
-                </div>
-                <div className="modal-body modal-stack">
-                    <div className="muted">{[resource.path, resource.chapter, resource.section].filter(Boolean).join(" / ") || "公共资料"}</div>
-                    <div className="resource-preview-content">
-                        {resource.loading ? "正在加载资料切片..." : (resource.contentPreview || "暂无可预览内容。")}
-                    </div>
-                    {Array.isArray(resource.citations) && resource.citations.length > 0 && (
-                        <div className="citation-list">
-                            {resource.citations.slice(0, 6).map((item, index) => <span key={`${item.chunkId || index}`}>{item.title || `切片 ${index + 1}`}</span>)}
-                        </div>
-                    )}
-                    <div className="button-row right">
-                        <button className="plain-btn" onClick={() => downloadPublicResource(resource)}>下载</button>
-                        <button className="primary-btn" disabled={resource.canReference === false} onClick={() => { addResource(resource); close(); }}>引用</button>
-                    </div>
-                </div>
-            </div>
-        </div>
-    );
-}
-
-function PublicUploadModal({ open, uploadJob, uploadPublicResource, close }) {
-    if (!open) return null;
-    return (
-        <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
-            <div className="modal">
-                <div className="modal-head"><span>上传到公共资料</span><button className="icon-btn" onClick={close}>×</button></div>
-                <div className="modal-body modal-stack">
-                    <div className="muted">文件会先进入公共资料待处理队列，后续由资料处理流程完成切片、审核和向量入库。</div>
-                    <label className="plain-btn upload-button">
-                        选择公共资料文件
-                        <input type="file" hidden accept=".txt,.md,.pdf,.doc,.docx,.ppt,.pptx,image/*" onChange={uploadPublicResource} />
-                    </label>
-                    {uploadJob ? (
-                        <div className="card no-shadow">
-                            <h3>{uploadJob.title}</h3>
-                            <p className="muted">{uploadJob.path} / {uploadJob.section}</p>
-                            <p className="muted">{uploadJob.contentPreview}</p>
-                        </div>
-                    ) : (
-                        <div className="empty-state">尚未选择文件</div>
-                    )}
-                </div>
-            </div>
-        </div>
-    );
-}
-
-function Sidebar({
-    view,
-    setView,
-    subjects,
-    activeSubjectId,
-    openSubject,
-    freeConversations,
-    activeFreeId,
-    setActiveFreeId,
-    newFreeConversation,
-    openActionDialog,
-    timer,
-    openModal,
-    startQuickTimer,
-}) {
-    const [subjectsOpen, setSubjectsOpen] = useState(true);
-    const [freeOpen, setFreeOpen] = useState(true);
-
-    return (
-        <aside className="sidebar">
-            <div className="brand">
-                <div className="brand-title">逸仙学习助手</div>
-                <div className="brand-date">{formatDate()}</div>
-            </div>
-            <div className="nav-scroll">
-                <div className="nav-group">
-                    <button className={`nav-item ${view === "plan" ? "active" : ""}`} onClick={() => setView("plan")}><span className="nav-label">学习计划</span></button>
-                    <button className={`nav-item ${view === "library" ? "active" : ""}`} onClick={() => setView("library")}><span className="nav-label">资料库</span></button>
-                </div>
-                <div className="nav-gap" />
-                <div className="nav-group">
-                    <button className="nav-heading" onClick={() => setSubjectsOpen((value) => !value)}><span><span>{subjectsOpen ? "▾" : "▸"}</span><span className="text">学科</span></span></button>
-                    <div className={`subject-list ${subjectsOpen ? "" : "collapsed"}`}>
-                        <button className={`nav-item ${view === "new-subject" ? "active" : ""}`} onClick={() => setView("new-subject")}><span className="nav-label">+ 新学科</span></button>
-                        {subjects.map((subject) => (
-                            <div className={`nav-row ${view === "subject" && activeSubjectId === subject.id ? "is-active" : ""}`} key={subject.id}>
-                                <button className={`nav-item ${view === "subject" && activeSubjectId === subject.id ? "active" : ""}`} onClick={() => openSubject(subject.id)}><span className="nav-label">{subject.name}</span></button>
-                                <button className="row-menu" title="更多操作" onClick={() => openActionDialog({ type: "subject", subject })}>⋯</button>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-                <div className="nav-gap" />
-                <div className="nav-group">
-                    <button className={`nav-item ${view === "free-chat" && !activeFreeId ? "active" : ""}`} onClick={newFreeConversation}><span className="nav-label">新对话</span></button>
-                    <button className="nav-heading recent-heading" onClick={() => setFreeOpen((value) => !value)}><span><span>{freeOpen ? "▾" : "▸"}</span><span className="text">最近对话</span></span></button>
-                    <div className={`chat-list ${freeOpen ? "" : "collapsed"}`}>
-                        {freeConversations.map((conversation) => (
-                            <div className={`nav-row ${view === "free-chat" && activeFreeId === conversation.id ? "is-active" : ""}`} key={conversation.id}>
-                                <button
-                                    className={`subitem ${view === "free-chat" && activeFreeId === conversation.id ? "active" : ""}`}
-                                    onClick={() => {
-                                        setActiveFreeId(conversation.id);
-                                        setView("free-chat");
-                                    }}
-                                >
-                                    <span className="nav-label">{conversation.title}</span>
-                                </button>
-                                <button className="row-menu" title="更多操作" onClick={() => openActionDialog({ type: "free", conversation })}>⋯</button>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-            </div>
-            <div className="sidebar-footer">
-                <div className="learning-mini">
-                    <strong>{timer.taskTitle || "当前学习会话"}</strong>
-                    <span>{timer.running ? `${timer.subject} · ${timer.elapsed}` : "暂无进行中的计时"}</span>
-                    <div className="mini-actions">
-                        <button className="mini-btn" onClick={() => openModal("timer")}>计时</button>
-                        <button className="mini-btn" onClick={startQuickTimer}>正计时</button>
-                        <button className="mini-btn" onClick={() => setView("subject")}>去学科</button>
-                    </div>
-                </div>
-                <button className={`nav-item ${view === "settings" ? "active" : ""}`} onClick={() => setView("settings")}><span className="nav-label">设置</span></button>
-            </div>
-        </aside>
-    );
-}
-
-function PlanView({
-    planTab,
-    setPlanTab,
-    conversations,
-    activeId,
-    setActiveId,
-    newConversation,
-    drafts,
-    confirmDraft,
-    deleteDraft,
-    deleteConversation,
-    openRenameDialog,
-    input,
-    setInput,
-    sendPlanningMessage,
-    messages,
-    taskForm,
-    setTaskForm,
-    saveTask,
-    tasks,
-    subjects,
-    startTimer,
-    createSubject,
-    aiStatus,
-    aiError,
-}) {
-    const [conversationsOpen, setConversationsOpen] = useState(true);
-    const [draftsOpen, setDraftsOpen] = useState(true);
-    return (
-        <section className="view" id="view-plan">
-            <div className="plan-frame">
-                <div className="plan-tabs">
-                    <button className={`plan-tab ${planTab === "ai" ? "active" : ""}`} onClick={() => setPlanTab("ai")}>AI规划</button>
-                    <button className={`plan-tab ${planTab === "tasks" ? "active" : ""}`} onClick={() => setPlanTab("tasks")}>任务安排</button>
-                    <button className={`plan-tab ${planTab === "schedule" ? "active" : ""}`} onClick={() => setPlanTab("schedule")}>学习日程</button>
-                </div>
-                {planTab === "ai" && (
-                    <div className="planner-layout">
-                        <div className="planner-rail">
-                            <div className="rail-section">
-                                <button className="rail-section-head" onClick={() => setConversationsOpen((value) => !value)}><span>规划对话</span><span className="chevron">{conversationsOpen ? "▾" : "▸"}</span></button>
-                                {conversationsOpen && <div className="rail-section-body">
-                                    <button className="plain-btn" onClick={newConversation}>新建规划对话</button>
-                                    {conversations.map((conversation) => (
-                                        <div key={conversation.id} className={`rail-card rail-card-row ${conversation.id === activeId ? "active" : ""}`}>
-                                            <button className="rail-card-main" onClick={() => setActiveId(conversation.id)}>
-                                                <strong>{conversation.title}</strong>
-                                                <div className="muted">AI 规划助手</div>
-                                            </button>
-                                            <div className="rail-card-actions">
-                                                <button className="mini-btn" onClick={() => openRenameDialog({ type: "planning", id: conversation.id, title: conversation.title })}>改名</button>
-                                                <button className="mini-btn danger-btn" onClick={() => deleteConversation(conversation.id)}>删除</button>
-                                            </div>
-                                        </div>
-                                    ))}
-                                </div>}
-                            </div>
-                            <div className="rail-section draft-section">
-                                <button className="rail-section-head" onClick={() => setDraftsOpen((value) => !value)}><span>任务草案</span><span className="chevron">{draftsOpen ? "▾" : "▸"}</span></button>
-                                {draftsOpen && <div className="rail-section-body">
-                                    <div className="draft-area">
-                                        <div className="draft-list">
-                                            {drafts.map((draft) => (
-                                                <div className="draft-card" key={draft.id}>
-                                                    <strong>{draft.title}</strong>
-                                                    <div className="draft-time">{draft.date || "待排期"} {draft.start || ""}{draft.end ? `-${draft.end}` : ""}</div>
-                                                    {draft.subject && <div className="tag green">{draft.subject}</div>}
-                                                    <div className="draft-desc">{draft.description}</div>
-                                                    <div className="draft-actions">
-                                                        <button className="mini-btn" disabled={draft.status === "confirmed"} onClick={() => confirmDraft(draft)}>{draft.status === "confirmed" ? "已加入日程" : "确认加入日程"}</button>
-                                                        <button className="mini-btn">查看详情</button>
-                                                        <button className="mini-btn" onClick={() => deleteDraft(draft)}>删除</button>
-                                                    </div>
-                                                </div>
-                                            ))}
-                                            {drafts.length === 0 && <div className="muted">暂无任务草案。</div>}
-                                        </div>
-                                    </div>
-                                </div>}
-                            </div>
-                        </div>
-                        <div className="ai-main">
-                            <div className="chat-canvas">
-                                <div className="message ai">你可以直接发学习目标、错题、卡点、考试需求、时间约束。我会先生成任务草案，你确认后再加入日程。</div>
-                                {messages.map((message) => <MessageBubble key={message.id} message={message} />)}
-                                {aiStatus === "loading" && <div className="muted">AI 正在整理规划...</div>}
-                                {aiError && <div className="error-text">{aiError}</div>}
-                            </div>
-                            <Composer value={input} setValue={setInput} onSend={sendPlanningMessage} placeholder="发学习目标、错题、卡点、考试时间或本周可用时间" disabled={aiStatus === "loading"} />
-                        </div>
-                    </div>
-                )}
-                {planTab === "tasks" && <TasksPanel form={taskForm} setForm={setTaskForm} saveTask={saveTask} tasks={tasks} subjects={subjects} startTimer={startTimer} createSubject={createSubject} />}
-                {planTab === "schedule" && <ScheduleView tasks={tasks} />}
-            </div>
-        </section>
-    );
-}
-
-function TasksPanel({ form, setForm, saveTask, tasks, subjects, startTimer, createSubject }) {
-    const [taskView, setTaskView] = useState("new");
-    const [newSubjectName, setNewSubjectName] = useState("");
-    const activeSubjectFilter = taskView.startsWith("subject:") ? taskView.slice("subject:".length) : "";
-    const activeSubject = subjects.find((subject) => subject.id === activeSubjectFilter);
-    const visibleTasks = tasks.filter((task) => {
-        if (taskView === "new" || taskView === "all") return true;
-        if (taskView === "uncategorized") return !task.subject;
-        if (activeSubject) return task.subject === activeSubject.name;
-        return true;
-    });
-    const viewTitle = taskView === "new"
-        ? "新建任务"
-        : taskView === "all"
-            ? "全部任务"
-            : taskView === "uncategorized"
-                ? "待归档任务"
-                : activeSubject?.name || "学科任务";
-
-    function handleCreateSubject() {
-        const createdName = createSubject(newSubjectName);
-        if (!createdName) return;
-        setForm((prev) => ({ ...prev, subject: createdName }));
-        setNewSubjectName("");
-    }
-
-    return (
-        <div className="task-shell">
-            <div className="side-panel">
-                <div className="side-section">
-                    <div className="side-label">任务视图</div>
-                    <button className={`side-pill ${taskView === "new" ? "active" : ""}`} onClick={() => setTaskView("new")}>新建任务</button>
-                    <button className={`side-pill ${taskView === "all" ? "active" : ""}`} onClick={() => setTaskView("all")}>全部任务</button>
-                    <button className={`side-pill ${taskView === "uncategorized" ? "active" : ""}`} onClick={() => setTaskView("uncategorized")}>待归档任务</button>
-                </div>
-                <div className="side-section">
-                    <div className="side-label">按学科筛选</div>
-                    {subjects.map((subject) => (
-                        <button className={`side-pill ${taskView === `subject:${subject.id}` ? "active" : ""}`} key={subject.id} onClick={() => setTaskView(`subject:${subject.id}`)}>
-                            {subject.name}
-                        </button>
-                    ))}
-                </div>
-            </div>
-            <div className="task-main">
-                {taskView === "new" && <div>
-                    <h2>新建任务</h2>
-                    <p className="muted">可选择已有学科，也可先新建学科；未选择学科时保存到待归档。</p>
-                    <div className="form-grid">
-                        <input value={form.title} onChange={(event) => setForm((prev) => ({ ...prev, title: event.target.value }))} placeholder="任务名，例如：章节复习" />
-                        <select className="form-control" value={form.subject} onChange={(event) => setForm((prev) => ({ ...prev, subject: event.target.value }))}>
-                            <option value="">保存到待归档</option>
-                            {subjects.map((subject) => <option key={subject.id} value={subject.name}>{subject.name}</option>)}
-                        </select>
-                        <div className="inline-create">
-                            <input value={newSubjectName} onChange={(event) => setNewSubjectName(event.target.value)} placeholder="新学科名称" />
-                            <button className="plain-btn" onClick={handleCreateSubject}>新建学科</button>
-                        </div>
-                        <div className="form-row">
-                            <input type="date" value={form.date} onChange={(event) => setForm((prev) => ({ ...prev, date: event.target.value }))} />
-                            <input type="time" value={form.start} onChange={(event) => setForm((prev) => ({ ...prev, start: event.target.value }))} />
-                            <input type="time" value={form.end} onChange={(event) => setForm((prev) => ({ ...prev, end: event.target.value }))} />
-                        </div>
-                        <textarea value={form.description} onChange={(event) => setForm((prev) => ({ ...prev, description: event.target.value }))} placeholder="任务说明，可选：目标、范围、要用的资料、验收方式。" />
-                        <div className="align-end"><button className="primary-btn" onClick={saveTask}>保存任务</button></div>
-                    </div>
-                </div>}
-                <div className="task-list">
-                    <div className="task-list-head">
-                        <h2>{taskView === "new" ? "最近任务" : viewTitle}</h2>
-                        <span className="muted">{visibleTasks.length} 个任务</span>
-                    </div>
-                    {visibleTasks.map((task) => (
-                        <div className="list-row" key={task.id}>
-                            <div><strong>{task.title}</strong><div className="muted">{task.subject || "待归档"} · {task.date} {task.start}-{task.end}</div></div>
-                            <button className="mini-btn" onClick={() => startTimer(task)}>开始</button>
-                        </div>
-                    ))}
-                    {visibleTasks.length === 0 && <div className="empty-state">暂无任务</div>}
-                </div>
-            </div>
-        </div>
-    );
-}
-
-function ScheduleView({ tasks }) {
-    const [weekOffset, setWeekOffset] = useState(0);
-    const hours = Array.from({ length: 17 }, (_, index) => index + 7);
-    const today = new Date();
-    const weekDays = Array.from({ length: 7 }, (_, index) => {
-        const date = new Date(today);
-        const mondayOffset = (date.getDay() || 7) - 1;
-        date.setHours(0, 0, 0, 0);
-        date.setDate(date.getDate() - mondayOffset + index + weekOffset * 7);
-        return date;
-    });
-    const toDateKey = (day) => {
-        const local = new Date(day.getTime() - day.getTimezoneOffset() * 60000);
-        return local.toISOString().slice(0, 10);
-    };
-    const weekLabel = weekOffset === 0 ? "本周" : weekOffset < 0 ? `${Math.abs(weekOffset)}周前` : `${weekOffset}周后`;
-
-    return (
-        <div className="schedule-wrap">
-            <div className="schedule-toolbar">
-                <button className="plain-btn" onClick={() => setWeekOffset((value) => value - 1)}>上一周</button>
-                <div className="week-title">{weekLabel} · {weekDays[0].toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" })} - {weekDays[6].toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" })}</div>
-                <button className="plain-btn" onClick={() => setWeekOffset((value) => value + 1)}>下一周</button>
-            </div>
-            <div className="calendar-card">
-                <div className="calendar-hint">
-                    <span>点击日程卡片可查看详情、开始学习或调整时间。</span>
-                    <button className="plain-btn">查看全天 24 小时</button>
-                </div>
-                <div className="week-head">
-                    <div />
-                    {weekDays.map((day) => (
-                        <div className={`day-cell ${day.toDateString() === today.toDateString() ? "today" : ""}`} key={day.toISOString()}>
-                            <div><small>{day.toLocaleDateString("zh-CN", { weekday: "short" })}</small>{day.getDate()}</div>
-                        </div>
-                    ))}
-                </div>
-                <div className="calendar-body">
-                    {hours.map((hour) => (
-                        <Fragment key={hour}>
-                            <div className="time-label" key={`time-${hour}`}>{String(hour).padStart(2, "0")}:00</div>
-                            {weekDays.map((day) => {
-                                const dateKey = toDateKey(day);
-                                const items = tasks.filter((task) => task.date === dateKey && Number(String(task.start || "19:00").slice(0, 2)) === hour);
-                                return (
-                                <div className="hour-cell" key={`${dateKey}-${hour}`}>
-                                    {items.map((task) => <button className="schedule-task" key={task.id}>{task.title}</button>)}
-                                </div>
-                                );
-                            })}
-                        </Fragment>
-                    ))}
-                </div>
-                <div className="legend"><span>学习</span><span>复盘</span><span>建议</span><span>空白时间</span></div>
-            </div>
-        </div>
-    );
-}
-
-function LibraryView({ query, setQuery, search, publicResources, privateResources, uploadPrivate, openPublicUpload, openPrivateResource, openPublicResource, downloadPublicResource, referencePublicResource }) {
-    return (
-        <section className="view" id="view-library">
-            <div className="topbar"><div className="top-title">资料库</div><div className="top-actions"><button className="plain-btn">管理分类</button></div></div>
-            <div className="content wide-content library-page">
-                <h1 className="page-title">资料库</h1>
-                <div className="search-bar">
-                    <input value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") search(); }} placeholder="搜索资料名称、学科、标签" />
-                    <button className="plain-btn" onClick={search}>搜索</button>
-                </div>
-                <div className="library-grid">
-                    <div className="card">
-                        <h3>公共资料</h3>
-                        <button className="plain-btn upload-button" onClick={openPublicUpload}>上传到公共资料</button>
-                        {publicResources.map((item) => (
-                            <div className="file-row" key={`${item.resourceId}-${item.chunkId}`}>
-                                <span><strong>{item.title}</strong><small>{item.contentPreview}</small></span>
-                                <div className="file-actions"><button className="mini-btn" onClick={() => openPublicResource(item)}>打开</button><button className="mini-btn" disabled={item.canReference === false} onClick={() => referencePublicResource(item)}>引用</button><button className="mini-btn" onClick={() => downloadPublicResource(item)}>下载</button></div>
-                            </div>
-                        ))}
-                        {publicResources.length === 0 && <div className="empty-state">暂无公共资料，请上传资料后再检索</div>}
-                    </div>
-                    <div className="card">
-                        <h3>私有资料</h3>
-                        <label className="plain-btn upload-button">
-                            上传到私有资料
-                            <input type="file" hidden accept=".txt,.md,.pdf,.doc,.docx,.ppt,.pptx,image/*,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={uploadPrivate} />
-                        </label>
-                        {privateResources.map((item) => (
-                            <div className="file-row" key={item.id || item.storagePath}>
-                                <span>{item.name || item.title}</span>
-                                <div className="file-actions">
-                                    <button className="mini-btn" onClick={() => openPrivateResource(item)}>打开</button>
-                                    <button className="mini-btn" onClick={() => openPrivateResource(item)}>下载</button>
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-            </div>
-        </section>
-    );
-}
-
-function SubjectView({ subject, subjectTab, setSubjectTab, conversations, startConversation, openConversation, resources, removeResource, reviews, updateSubject, saveSubject, deleteConversation, openRenameDialog }) {
-    return (
-        <section className="view" id="view-subject">
-            <div className="topbar"><div className="top-title">{subject.name}</div><div className="top-actions"><button className="icon-btn">↗</button><button className="icon-btn">⋯</button></div></div>
-            <div className="content project-hero">
-                <div className="project-title">{subject.name}</div>
-                <div className="composer subject-quick">
-                    <button className="plus-btn">+</button>
-                    <input placeholder="在该学科中开始新对话" readOnly onFocus={startConversation} />
-                    <button className="plain-btn">联网</button>
-                    <button className="plain-btn">引用</button>
-                    <button className="round-btn" onClick={startConversation}>▶</button>
-                </div>
-                <div className="tabs">
-                    {[
-                        ["chat", "聊天"],
-                        ["source", "来源"],
-                        ["reviews", "复盘历史"],
-                        ["settings", "学科设置"],
-                    ].map(([key, label]) => <button className={`tab ${subjectTab === key ? "active" : ""}`} key={key} onClick={() => setSubjectTab(key)}>{label}</button>)}
-                </div>
-                {subjectTab === "chat" && (
-                    <div className="subject-panel list">
-                        <button className="list-row" onClick={startConversation}><div><strong>新建对话</strong><div className="muted">点击进入空白聊天界面</div></div><span className="muted">现在</span></button>
-                        {conversations.map((conversation) => (
-                            <div className="list-row" key={conversation.id}>
-                                <button className="list-row-main" onClick={() => openConversation(conversation)}><div><strong>{conversation.title}</strong><div className="muted">自动生成标题 · 待确认复盘</div></div></button>
-                                <div className="file-actions">
-                                    <button className="mini-btn" onClick={() => openRenameDialog({ type: "subject", id: conversation.id, title: conversation.title })}>改名</button>
-                                    <button className="mini-btn danger-btn" onClick={() => deleteConversation(conversation.id)}>删除</button>
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                )}
-                {subjectTab === "source" && (
-                    <div className="subject-panel source-grid">
-                        <div className="card"><h3>本学科私有来源</h3>{resources.filter((item) => item.scope === "private").map((item) => <div className="file-row" key={item.id}><span>{item.title}</span><div className="file-actions"><button className="mini-btn">打开</button><button className="mini-btn" onClick={() => removeResource(item.id)}>移除</button></div></div>)}</div>
-                        <div className="card"><h3>引用的公共来源</h3>{resources.filter((item) => item.scope !== "private").map((item) => <div className="file-row" key={item.id}><span>{item.title}</span><div className="file-actions"><button className="mini-btn">打开</button><button className="mini-btn" onClick={() => removeResource(item.id)}>取消引用</button></div></div>)}</div>
-                    </div>
-                )}
-                {subjectTab === "reviews" && (
-                    <div className="subject-panel review-grid">
-                        <div className="card"><h3>用户原始自述</h3>{reviews.map((item) => <p key={item.id}>{item.original}</p>)}</div>
-                        <div className="card"><h3>收获</h3>{reviews.map((item) => <p key={item.id}>{item.harvest}</p>)}</div>
-                    </div>
-                )}
-                {subjectTab === "settings" && (
-                    <div className="subject-panel settings-panel">
-                        <div className="card"><div className="modal-stack">
-                            <div className="field-stack"><label>学科名称</label><input className="new-subject-input" value={subject.name} onChange={(event) => updateSubject({ name: event.target.value })} /></div>
-                            <div className="field-stack"><label>学科指令</label><div className="muted">设置此学科的背景信息和回复方式，相当于该学科内所有对话共用的提示词。</div><textarea value={subject.instruction || ""} onChange={(event) => updateSubject({ instruction: event.target.value })} /></div>
-                            <div><button className="primary-btn" onClick={saveSubject}>保存学科设置</button></div>
-                        </div></div>
-                    </div>
-                )}
-            </div>
-        </section>
-    );
-}
-
-function ChatView({ title, chatTab, setChatTab, messages, input, setInput, send, openSource, timer, openTimer, finish, reviews, aiStatus, aiError, webEnabled, selectedReferences, onRename }) {
-    return (
-        <section className="view" id="view-chat">
-            <div className="topbar"><div className="top-title">{title}</div><div className="top-actions"><button className="mini-btn" onClick={onRename}>改名</button><button className="mini-btn" onClick={openTimer}>计时</button><button className="icon-btn">⋯</button></div></div>
-            <div className="chat-shell">
-                <div className="chat-head">
-                    <div className="tabs"><button className={`tab ${chatTab === "chat" ? "active" : ""}`} onClick={() => setChatTab("chat")}>聊天</button><button className={`tab ${chatTab === "review" ? "active" : ""}`} onClick={() => setChatTab("review")}>复盘</button></div>
-                    <div className="learning-bar"><div><div className="learning-bar-title">{timer.taskTitle || "当前任务"}</div><div className="learning-bar-meta">{timer.running ? `专注中 · ${timer.elapsed}` : "未开始计时"}</div></div><div className="timer-actions"><span className="timer-value">{timer.elapsed}</span><button className="mini-btn" onClick={openTimer}>展开</button><button className="mini-btn" onClick={finish}>结束</button></div></div>
-                </div>
-                {chatTab === "chat" ? (
-                    <div className="chat-panel conversation">
-                        {messages.map((message) => <MessageBubble key={message.id} message={message} />)}
-                        {aiStatus === "loading" && <div className="muted">AI 正在回答...</div>}
-                        {aiError && <div className="error-text">{aiError}</div>}
-                    </div>
-                ) : (
-                    <div className="review-layout"><div className="card"><h3>用户原始自述</h3><p className="muted">可保留原貌，也可由 AI 润色后存档。</p>{reviews.map((item) => <div className="review-item" key={item.id}>{item.original}</div>)}</div><div className="card pending"><h3>待确认收获</h3><p className="muted">用户回复“入库”后先暂存在这里。</p>{reviews.map((item) => <div className="review-item" key={item.id}>{item.harvest}</div>)}<button className="primary-btn">一键确认入库</button></div></div>
-                )}
-                <Composer value={input} setValue={setInput} onSend={send} placeholder="有问题，尽管问" openSource={openSource} webEnabled={webEnabled} referenceCount={selectedReferences.length} disabled={aiStatus === "loading"} />
-            </div>
-        </section>
-    );
-}
-
-function FreeChatView({ title, messages, input, setInput, send, openSource, aiStatus, aiError, webEnabled, selectedReferences, onRename }) {
-    return (
-        <section className="view" id="view-free-chat">
-            <div className="topbar"><div className="top-title">{title}</div><div className="top-actions"><button className="mini-btn" onClick={onRename}>改名</button><button className="icon-btn">⋯</button></div></div>
-            <div className="chat-shell free-chat-shell">
-                <div className="free-chat-body">
-                    {messages.length === 0 && <div className="message ai">这里是新对话入口。你可以直接开始提问、整理资料或临时讨论；发送第一条消息后，它会出现在左侧最近对话中。</div>}
-                    {messages.map((message) => <MessageBubble key={message.id} message={message} />)}
-                    {aiStatus === "loading" && <div className="muted">AI 正在回答...</div>}
-                    {aiError && <div className="error-text">{aiError}</div>}
-                </div>
-                <Composer value={input} setValue={setInput} onSend={send} placeholder="开始一个新对话" openSource={openSource} webEnabled={webEnabled} referenceCount={selectedReferences.length} disabled={aiStatus === "loading"} />
-            </div>
-        </section>
-    );
-}
-
-function NewSubjectView({ draft, setDraft, createSubject }) {
-    return (
-        <section className="view" id="view-new-subject">
-            <div className="topbar"><div className="top-title">新学科</div></div>
-            <div className="content">
-                <h1 className="page-title">创建新学科</h1>
-                <div className="card"><div className="modal-stack">
-                    <div className="field-stack"><label>学科名称</label><input className="new-subject-input" value={draft.name} onChange={(event) => setDraft((prev) => ({ ...prev, name: event.target.value }))} placeholder="例如：线性代数" /></div>
-                    <div className="field-stack"><label>学科指令</label><div className="muted">设置此学科的背景信息和回复方式，相当于该学科内所有对话共用的提示词。</div><textarea value={draft.instruction} onChange={(event) => setDraft((prev) => ({ ...prev, instruction: event.target.value }))} placeholder="例如：这是我的线性代数学科..." /></div>
-                    <div><button className="primary-btn" onClick={createSubject}>创建</button></div>
-                </div></div>
-            </div>
-        </section>
-    );
-}
-
-function SettingsView({ currentUser, openAuth }) {
-    return (
-        <section className="view" id="view-settings">
-            <div className="topbar"><div className="top-title">设置</div></div>
-            <div className="content">
-                <h1 className="page-title">设置</h1>
-                <div className="source-grid">
-                    <div className="card"><h3>登录</h3><p className="muted">{currentUser ? currentUser.email : "账号状态、退出登录、同步状态。"}</p><button className="primary-btn" onClick={openAuth}>{currentUser ? "账号" : "登录 / 注册"}</button></div>
-                    <div className="card"><h3>AI 设置</h3><p className="muted">模型、联网搜索、API Key 状态。</p></div>
-                </div>
-            </div>
-        </section>
-    );
-}
-
-function Composer({ value, setValue, onSend, placeholder, openSource, webEnabled, onToggleWeb, referenceCount = 0, disabled = false }) {
-    return (
-        <div className="composer">
-            <button className="plus-btn">+</button>
-            <input value={value} onChange={(event) => setValue(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !disabled) onSend(); }} placeholder={placeholder} disabled={disabled} />
-            <button className={`plain-btn ${webEnabled ? "active-soft" : ""}`} onClick={onToggleWeb} type="button" disabled={!onToggleWeb && webEnabled}>联网</button>
-            {openSource && <button className={`plain-btn ${referenceCount ? "active-soft" : ""}`} onClick={openSource} type="button">引用{referenceCount ? ` ${referenceCount}` : ""}</button>}
-            <button className="round-btn" onClick={onSend} disabled={disabled || !value.trim()}>▶</button>
-        </div>
-    );
-}
-
-function MessageBubble({ message }) {
-    return (
-        <div className={`message ${message.role === "user" ? "user" : "ai"}`}>
-            {message.role === "assistant" ? <AIMessage content={message.content || ""} /> : message.content}
-            {Array.isArray(message.citations) && message.citations.length > 0 && (
-                <div className="citation-list">
-                    {message.citations.slice(0, 6).map((item, index) => (
-                        <span key={`${item.url || item.resourceId || item.chunkId || index}`}>{item.title || item.url || `引用 ${index + 1}`}</span>
-                    ))}
-                </div>
-            )}
-        </div>
-    );
-}
-
-function SourceModal({ open, query, setQuery, search, results, addResource, currentResources, selectedReferences, close }) {
-    if (!open) return null;
-    return (
-        <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
-            <div className="modal">
-                <div className="modal-head"><span>引用资料库内容</span><button className="icon-btn" onClick={close}>×</button></div>
-                <div className="modal-body"><div className="modal-stack">
-                    <div className="search-bar"><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索可引用的资料" /><button className="plain-btn" onClick={search}>搜索</button></div>
-                    <div className="card">
-                        <h3>当前引用</h3>
-                        {selectedReferences.map((item) => <div className="select-row" key={`${item.resourceId}-${item.chunkId || item.id}`}><input type="checkbox" checked readOnly /><span>{item.title}</span><button className="mini-btn">已引用</button></div>)}
-                        {selectedReferences.length === 0 && <div className="muted">暂无引用资料。</div>}
-                    </div>
-                    <div className="card"><h3>当前学科来源</h3>{currentResources.map((item) => <div className="select-row" key={item.id}><input type="checkbox" checked readOnly /><span>{item.title}</span><button className="mini-btn">预览</button></div>)}</div>
-                    {results.map((item) => <div className="select-row" key={`${item.resourceId}-${item.chunkId}`}><input type="checkbox" readOnly /><span>{item.title}</span><button className="mini-btn" onClick={() => addResource(item)}>引用</button></div>)}
-                    <div className="align-end"><button className="plain-btn" onClick={close}>取消</button><button className="primary-btn" onClick={close}>引用选中资料</button></div>
-                </div></div>
-            </div>
-        </div>
-    );
-}
-
-function TimerModal({ open, timer, setTimer, close, finish }) {
-    if (!open) return null;
-    return (
-        <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
-            <div className="modal">
-                <div className="modal-head"><span>当前学习计时</span><button className="icon-btn" onClick={close}>×</button></div>
-                <div className="modal-body"><div className="modal-stack">
-                    <div><h3>{timer.taskTitle || "当前任务"}</h3><div className="muted">绑定当前任务和当前对话，结束后回写实际学习时间。</div></div>
-                    <div className="timer-mode"><button className="active">正计时</button><button disabled>番茄钟</button></div>
-                    <div className="timer-display"><span className="muted">本次学习已进行</span><strong>{timer.elapsed}</strong><span className="muted">点击开始后持续累计，结束学习时记录本次时长。</span></div>
-                    <div className="button-row"><button className="primary-btn" onClick={() => setTimer((prev) => ({ ...prev, running: !prev.running, startedAt: prev.startedAt || new Date().toISOString() }))}>{timer.running ? "暂停" : "开始"}</button><button className="plain-btn">跳过休息</button><button className="plain-btn" onClick={finish}>结束学习</button></div>
-                </div></div>
-            </div>
-        </div>
-    );
-}
-
-function TaskDetailModal({ open, task, close }) {
-    if (!open) return null;
-    return (
-        <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
-            <div className="modal"><div className="modal-head"><span>任务详情</span><button className="icon-btn" onClick={close}>×</button></div><div className="modal-body"><div className="modal-stack"><div><h3>{task?.title || "当前任务"}</h3><div className="muted">{task?.date || "待排期"}</div></div><div className="card no-shadow"><h3>任务说明</h3><p className="muted">{task?.description || "这里展示任务目标、要求和备注。"}</p></div></div></div></div>
-        </div>
-    );
-}
-
-function FinishModal({ open, timer, finishForm, setFinishForm, close, submit }) {
-    if (!open) return null;
-    return (
-        <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
-            <div className="modal"><div className="modal-head"><span>结束学习</span><button className="icon-btn" onClick={close}>×</button></div><div className="modal-body"><div className="modal-stack"><div className="timer-display"><span className="muted">本次学习时长</span><strong>{timer.elapsed}</strong><span className="muted">会记录到任务，并绑定当前学科对话。</span></div><div><h3>任务状态</h3><div className="finish-grid">{[["done", "完成"], ["partial", "部分完成"], ["missed", "未完成"]].map(([status, label]) => <button className={`plain-btn ${finishForm.status === status ? "active-soft" : ""}`} key={status} onClick={() => setFinishForm((prev) => ({ ...prev, status }))}>{label}</button>)}</div></div><div><h3>学习进度</h3><textarea className="finish-note" value={finishForm.note} onChange={(event) => setFinishForm((prev) => ({ ...prev, note: event.target.value }))} placeholder="简单报告本次进度：完成了什么、还剩什么、是否需要调整后续日程。" /></div><div className="button-row"><button className="primary-btn" onClick={submit}>提交进度</button><button className="plain-btn" onClick={() => { setFinishForm((prev) => ({ ...prev, note: "" })); submit(); }}>仅记录时间</button></div></div></div></div>
-        </div>
-    );
-}
-
-function UpdatePlanModal({ open, close, update }) {
-    if (!open) return null;
-    return (
-        <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
-            <div className="modal"><div className="modal-head"><span>是否更新规划</span><button className="icon-btn" onClick={close}>×</button></div><div className="modal-body"><div className="modal-stack"><div className="timer-display"><span className="muted">学习记录已保存</span><strong className="question-title">需要调整后续安排吗？</strong><span className="muted">如果选择更新规划，将进入 AI 规划页继续对话。</span></div><div className="button-row right"><button className="plain-btn" onClick={close}>暂不更新</button><button className="primary-btn" onClick={update}>更新规划</button></div></div></div></div>
-        </div>
-    );
-}
