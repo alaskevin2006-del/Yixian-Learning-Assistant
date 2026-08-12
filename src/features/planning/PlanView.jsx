@@ -1,41 +1,11 @@
-import { Fragment, useState } from "react";
+﻿import { Fragment, useEffect, useRef, useState } from "react";
 import { Composer, MessageBubble } from "../../components/common/ChatPrimitives";
 import { filterTasksForPanel } from "./taskFilters";
-
-const scheduleTimeBandOptions = [
-    { key: "night", label: "22:00-05:00", startHour: 22, endHour: 5 },
-    { key: "day", label: "06:00-13:00", startHour: 6, endHour: 13 },
-    { key: "evening", label: "14:00-21:00", startHour: 14, endHour: 21 },
-];
-const DEFAULT_SCHEDULE_TIME_BAND = "day";
 const RECENT_ITEM_LIMIT = 2;
 
 function localDateKey(date) {
     const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
     return local.toISOString().slice(0, 10);
-}
-
-function hourIsInBand(hour, band) {
-    if (band.startHour <= band.endHour) {
-        return hour >= band.startHour && hour <= band.endHour;
-    }
-    return hour >= band.startHour || hour <= band.endHour;
-}
-
-function hoursForScheduleBand(hours, bandKey) {
-    const band = scheduleTimeBandOptions.find((option) => option.key === bandKey)
-        || scheduleTimeBandOptions.find((option) => option.key === DEFAULT_SCHEDULE_TIME_BAND);
-    if (band.startHour <= band.endHour) {
-        return hours.filter((hour) => hourIsInBand(hour, band));
-    }
-    return [
-        ...hours.filter((hour) => hour >= band.startHour),
-        ...hours.filter((hour) => hour <= band.endHour),
-    ];
-}
-
-function scheduleBandForHour(hour) {
-    return scheduleTimeBandOptions.find((band) => hourIsInBand(hour, band))?.key || DEFAULT_SCHEDULE_TIME_BAND;
 }
 
 function taskScheduleDate(task) {
@@ -79,30 +49,6 @@ function taskSchedulePoint(task) {
     const timestamp = Date.parse(`${dateKey}T${hour}:${minute}:00`);
     if (Number.isNaN(timestamp)) return null;
     return { dateKey, hour: start.hour, timestamp };
-}
-
-function defaultScheduleTimeBand(tasks, now = new Date()) {
-    const todayKey = localDateKey(now);
-    const monday = new Date(now);
-    const mondayOffset = (monday.getDay() || 7) - 1;
-    monday.setHours(0, 0, 0, 0);
-    monday.setDate(monday.getDate() - mondayOffset);
-    const weekDateKeys = new Set(Array.from({ length: 7 }, (_, index) => {
-        const date = new Date(monday);
-        date.setDate(monday.getDate() + index);
-        return localDateKey(date);
-    }));
-    const schedulePoints = (tasks || [])
-        .map(taskSchedulePoint)
-        .filter((point) => point && weekDateKeys.has(point.dateKey));
-    const todayPoints = schedulePoints.filter((point) => point.dateKey === todayKey);
-    const candidates = todayPoints.length > 0 ? todayPoints : schedulePoints;
-    if (candidates.length === 0) return DEFAULT_SCHEDULE_TIME_BAND;
-    const nowTime = now.getTime();
-    const nearest = candidates
-        .slice()
-        .sort((left, right) => Math.abs(left.timestamp - nowTime) - Math.abs(right.timestamp - nowTime))[0];
-    return scheduleBandForHour(nearest.hour);
 }
 
 function timeValue(value) {
@@ -151,9 +97,11 @@ export function PlanView({
     newConversation,
     drafts,
     confirmDraft,
+    confirmAllDrafts,
     deleteDraft,
     deleteConversation,
     openRenameDialog,
+    openTaskDetail,
     input,
     setInput,
     sendPlanningMessage,
@@ -164,14 +112,16 @@ export function PlanView({
     tasks,
     subjects,
     startTimer,
-    createSubject,
+    openNewSubject,
     aiStatus,
     aiError,
 }) {
     const [conversationsOpen, setConversationsOpen] = useState(true);
     const [draftsOpen, setDraftsOpen] = useState(true);
-    const visibleConversations = recentItems(conversations);
-    const visibleDrafts = recentItems(drafts);
+    const [openMenu, setOpenMenu] = useState("");
+    const visibleConversations = conversations || [];
+    const visibleDrafts = drafts || [];
+    const pendingDraftCount = visibleDrafts.filter((draft) => draft.status !== "confirmed").length;
     return (
         <section className="view" id="view-plan">
             <div className="plan-frame">
@@ -185,37 +135,74 @@ export function PlanView({
                         <div className="planner-rail">
                             <div className="rail-section">
                                 <button className="rail-section-head" onClick={() => setConversationsOpen((value) => !value)}><span>规划对话</span><span className="chevron">{conversationsOpen ? "▾" : "▸"}</span></button>
-                                {conversationsOpen && <div className="rail-section-body">
+                                {conversationsOpen && <div className="rail-section-body conversation-section-body">
                                     <button className="plain-btn" onClick={newConversation}>新建规划对话</button>
-                                    {visibleConversations.map((conversation) => (
-                                        <div key={conversation.id} className={`rail-card rail-card-row ${conversation.id === activeId ? "active" : ""}`}>
-                                            <button className="rail-card-main" onClick={() => setActiveId(conversation.id)}>
-                                                <strong>{conversation.title}</strong>
-                                                <div className="muted">AI 规划助手</div>
-                                            </button>
-                                            <div className="rail-card-actions">
-                                                <button className="mini-btn" onClick={() => openRenameDialog({ type: "planning", id: conversation.id, title: conversation.title })}>改名</button>
-                                                <button className="mini-btn danger-btn" onClick={() => deleteConversation(conversation.id)}>删除</button>
+                                    <div className="conversation-list">
+                                        {visibleConversations.map((conversation) => (
+                                            <div
+                                                key={conversation.id}
+                                                className={`rail-card rail-card-clickable ${conversation.id === activeId ? "active" : ""}`}
+                                                onClick={() => {
+                                                    setActiveId(conversation.id);
+                                                    setOpenMenu("");
+                                                }}
+                                                onKeyDown={(event) => {
+                                                    if (event.key === "Enter" || event.key === " ") {
+                                                        event.preventDefault();
+                                                        setActiveId(conversation.id);
+                                                        setOpenMenu("");
+                                                    }
+                                                }}
+                                                role="button"
+                                                tabIndex={0}
+                                            >
+                                                <div className="rail-card-row">
+                                                    <div className="rail-card-main">
+                                                        <strong>{conversation.title}</strong>
+                                                        <div className="muted">AI 规划助手</div>
+                                                    </div>
+                                                    <div className="inline-menu planner-inline-menu">
+                                                        <button
+                                                            className="row-menu planner-row-menu"
+                                                            onClick={(event) => {
+                                                                event.stopPropagation();
+                                                                setOpenMenu((value) => value === `conversation:${conversation.id}` ? "" : `conversation:${conversation.id}`);
+                                                            }}
+                                                            aria-label="规划对话操作"
+                                                        >
+                                                            ⋯
+                                                        </button>
+                                                        {openMenu === `conversation:${conversation.id}` && (
+                                                            <div className="inline-menu-popover align-right" onClick={(event) => event.stopPropagation()}>
+                                                                <button onClick={() => { openRenameDialog({ type: "planning", id: conversation.id, title: conversation.title }); setOpenMenu(""); }}>改名</button>
+                                                                <button className="danger" onClick={() => { deleteConversation(conversation.id); setOpenMenu(""); }}>删除</button>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                </div>
                                             </div>
-                                        </div>
-                                    ))}
+                                        ))}
+                                    </div>
                                 </div>}
                             </div>
                             <div className="rail-section draft-section">
                                 <button className="rail-section-head" onClick={() => setDraftsOpen((value) => !value)}><span>任务草案</span><span className="chevron">{draftsOpen ? "▾" : "▸"}</span></button>
-                                {draftsOpen && <div className="rail-section-body">
+                                {draftsOpen && <div className="rail-section-body draft-section-body">
+                                    {pendingDraftCount > 0 && (
+                                        <button className="plain-btn" onClick={confirmAllDrafts}>全部加入日程</button>
+                                    )}
                                     <div className="draft-area">
                                         <div className="draft-list">
                                             {visibleDrafts.map((draft) => (
                                                 <div className="draft-card" key={draft.id}>
-                                                    <strong>{draft.title}</strong>
+                                                    <div className="draft-card-head">
+                                                        <strong>{draft.title}</strong>
+                                                    </div>
                                                     <div className="draft-time">{draft.date || "待排期"} {draft.start || ""}{draft.end ? `-${draft.end}` : ""}</div>
-                                                    {draft.subject && <div className="tag green">{draft.subject}</div>}
-                                                    <div className="draft-desc">{draft.description}</div>
-                                                    <div className="draft-actions">
-                                                        <button className="mini-btn" disabled={draft.status === "confirmed"} onClick={() => confirmDraft(draft)}>{draft.status === "confirmed" ? "已加入日程" : "确认加入日程"}</button>
-                                                        <button className="mini-btn">查看详情</button>
-                                                        <button className="mini-btn" onClick={() => deleteDraft(draft)}>删除</button>
+                                                    <div className="draft-actions draft-actions-inline">
+                                                        <button className="mini-btn active-soft" onClick={() => openTaskDetail?.(draft)}>查看</button>
+                                                        <button className="mini-btn" disabled={draft.status === "confirmed"} onClick={() => confirmDraft(draft)}>{draft.status === "confirmed" ? "已加入" : "加入"}</button>
+                                                        <button className="mini-btn danger-btn" onClick={() => deleteDraft(draft)}>删除</button>
                                                     </div>
                                                 </div>
                                             ))}
@@ -227,7 +214,7 @@ export function PlanView({
                         </div>
                         <div className="ai-main">
                             <div className="chat-canvas">
-                                <div className="message ai">你可以直接发学习目标、错题、卡点、考试需求、时间约束。我会先生成任务草案，你确认后再加入日程。</div>
+                                <div className="message ai">你可以直接发学习目标、错题、卡点、考试需求、时间约束。我会先澄清目标和安排，等你确认后再生成任务草案。</div>
                                 {messages.map((message) => <MessageBubble key={message.id} message={message} />)}
                                 {aiStatus === "loading" && <div className="muted">AI 正在整理规划...</div>}
                                 {aiError && <div className="error-text">{aiError}</div>}
@@ -236,8 +223,8 @@ export function PlanView({
                         </div>
                     </div>
                 )}
-                {planTab === "tasks" && <TasksPanel form={taskForm} setForm={setTaskForm} saveTask={saveTask} tasks={tasks} subjects={subjects} startTimer={startTimer} createSubject={createSubject} />}
-                {planTab === "schedule" && <ScheduleView tasks={tasks} />}
+                {planTab === "tasks" && <TasksPanel form={taskForm} setForm={setTaskForm} saveTask={saveTask} tasks={tasks} subjects={subjects} startTimer={startTimer} openNewSubject={openNewSubject} />}
+                {planTab === "schedule" && <ScheduleView tasks={tasks} openTaskDetail={openTaskDetail} />}
             </div>
         </section>
     );
@@ -245,9 +232,8 @@ export function PlanView({
 
 
 
-function TasksPanel({ form, setForm, saveTask, tasks, subjects, startTimer, createSubject }) {
+function TasksPanel({ form, setForm, saveTask, tasks, subjects, startTimer, openNewSubject }) {
     const [taskView, setTaskView] = useState("new");
-    const [newSubjectName, setNewSubjectName] = useState("");
     const [taskQuery, setTaskQuery] = useState("");
     const [taskLevel, setTaskLevel] = useState("all");
     const activeSubjectFilter = taskView.startsWith("subject:") ? taskView.slice("subject:".length) : "";
@@ -267,13 +253,6 @@ function TasksPanel({ form, setForm, saveTask, tasks, subjects, startTimer, crea
             : taskView === "uncategorized"
                 ? "待归档任务"
                 : activeSubject?.name || "学科任务";
-
-    function handleCreateSubject() {
-        const createdName = createSubject(newSubjectName);
-        if (!createdName) return;
-        setForm((prev) => ({ ...prev, subject: createdName }));
-        setNewSubjectName("");
-    }
 
     return (
         <div className="task-shell">
@@ -299,13 +278,12 @@ function TasksPanel({ form, setForm, saveTask, tasks, subjects, startTimer, crea
                     <p className="muted">可选择已有学科，也可先新建学科；未选择学科时保存到待归档。</p>
                     <div className="form-grid">
                         <input value={form.title} onChange={(event) => setForm((prev) => ({ ...prev, title: event.target.value }))} placeholder="任务名，例如：章节复习" />
-                        <select className="form-control" value={form.subject} onChange={(event) => setForm((prev) => ({ ...prev, subject: event.target.value }))}>
-                            <option value="">保存到待归档</option>
-                            {subjects.map((subject) => <option key={subject.id} value={subject.name}>{subject.name}</option>)}
-                        </select>
                         <div className="inline-create">
-                            <input value={newSubjectName} onChange={(event) => setNewSubjectName(event.target.value)} placeholder="新学科名称" />
-                            <button className="plain-btn" onClick={handleCreateSubject}>新建学科</button>
+                            <select className="form-control" value={form.subject} onChange={(event) => setForm((prev) => ({ ...prev, subject: event.target.value }))}>
+                                <option value="">保存到待归档</option>
+                                {subjects.map((subject) => <option key={subject.id} value={subject.name}>{subject.name}</option>)}
+                            </select>
+                            <button className="plain-btn" onClick={openNewSubject}>新建学科</button>
                         </div>
                         <div className="form-row">
                             <input type="date" value={form.date} onChange={(event) => setForm((prev) => ({ ...prev, date: event.target.value }))} />
@@ -360,13 +338,10 @@ function TasksPanel({ form, setForm, saveTask, tasks, subjects, startTimer, crea
 
 
 
-function ScheduleView({ tasks }) {
+function ScheduleView({ tasks, openTaskDetail }) {
     const [weekOffset, setWeekOffset] = useState(0);
-    const [selectedScheduleTimeBand, setSelectedScheduleTimeBand] = useState(DEFAULT_SCHEDULE_TIME_BAND);
-    const [useDefaultScheduleBand, setUseDefaultScheduleBand] = useState(true);
+    const calendarBodyRef = useRef(null);
     const hours = Array.from({ length: 24 }, (_, index) => index);
-    const scheduleTimeBand = useDefaultScheduleBand ? defaultScheduleTimeBand(tasks) : selectedScheduleTimeBand;
-    const visibleHours = hoursForScheduleBand(hours, scheduleTimeBand);
     const today = new Date();
     const weekDays = Array.from({ length: 7 }, (_, index) => {
         const date = new Date(today);
@@ -376,62 +351,69 @@ function ScheduleView({ tasks }) {
         return date;
     });
     const toDateKey = (day) => localDateKey(day);
-    const weekLabel = weekOffset === 0 ? "本周" : weekOffset < 0 ? `${Math.abs(weekOffset)}周前` : `${weekOffset}周后`;
+
+    useEffect(() => {
+        const body = calendarBodyRef.current;
+        if (!body) return;
+        const currentHour = new Date().getHours();
+        const currentLabel = body.querySelector(`[data-hour="${currentHour}"]`);
+        if (!currentLabel) return;
+        const nextTop = Math.max(
+            0,
+            currentLabel.offsetTop - (body.clientHeight / 2) + (currentLabel.clientHeight / 2),
+        );
+        body.scrollTo({ top: nextTop, behavior: "auto" });
+    }, [weekOffset]);
 
     return (
         <div className="schedule-wrap">
             <div className="schedule-toolbar">
                 <button className="plain-btn" onClick={() => setWeekOffset((value) => value - 1)}>上一周</button>
-                <div className="week-title">{weekLabel} · {weekDays[0].toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" })} - {weekDays[6].toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" })}</div>
+                <div className="week-title">
+                    <span>{weekDays[0].toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" })} - {weekDays[6].toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" })}</span>
+                </div>
                 <button className="plain-btn" onClick={() => setWeekOffset((value) => value + 1)}>下一周</button>
             </div>
             <div className="calendar-card">
-                <div className="calendar-hint">
-                    <span>点击日程卡片可查看详情、开始学习或调整时间。</span>
-                    <div className="schedule-view-switcher" aria-label="切换日程显示范围">
-                        {scheduleTimeBandOptions.map((option) => (
-                            <button
-                                className={`schedule-view-option ${scheduleTimeBand === option.key ? "active" : ""}`}
-                                key={option.key}
-                                onClick={() => {
-                                    setUseDefaultScheduleBand(false);
-                                    setSelectedScheduleTimeBand(option.key);
-                                }}
-                                type="button"
-                                aria-pressed={scheduleTimeBand === option.key}
-                            >
-                                {option.label}
-                            </button>
-                        ))}
-                    </div>
-                </div>
-                <div className="week-head">
-                    <div />
-                    {weekDays.map((day) => (
-                        <div className={`day-cell ${day.toDateString() === today.toDateString() ? "today" : ""}`} key={day.toISOString()}>
-                            <div><small>{day.toLocaleDateString("zh-CN", { weekday: "short" })}</small>{day.getDate()}</div>
-                        </div>
-                    ))}
-                </div>
-                <div className="calendar-body">
-                    {visibleHours.map((hour) => (
-                        <Fragment key={hour}>
-                            <div className="time-label" key={`time-${hour}`}>{String(hour).padStart(2, "0")}:00</div>
-                            {weekDays.map((day) => {
-                                const dateKey = toDateKey(day);
-                                const items = tasks.filter((task) => taskScheduleDate(task) === dateKey && (taskScheduleStart(task)?.hour ?? 19) === hour);
-                                return (
-                                <div className="hour-cell" key={`${dateKey}-${hour}`}>
-                                    {items.map((task) => <button className="schedule-task" key={task.id}>{task.title}</button>)}
+                <div className="calendar-grid-shell">
+                    <div className="calendar-grid-wide">
+                        <div className="week-head">
+                            <div className="time-axis-head">时间</div>
+                            {weekDays.map((day) => (
+                                <div className={`day-cell ${day.toDateString() === today.toDateString() ? "today" : ""}`} key={day.toISOString()}>
+                                    <div><small>{day.toLocaleDateString("zh-CN", { weekday: "short" })}</small>{day.getDate()}</div>
                                 </div>
-                                );
-                            })}
-                        </Fragment>
-                    ))}
+                            ))}
+                        </div>
+                        <div className="calendar-body" ref={calendarBodyRef}>
+                            {hours.map((hour) => (
+                                <Fragment key={hour}>
+                                    <div className="time-label" data-hour={hour} key={`time-${hour}`}>{String(hour).padStart(2, "0")}:00</div>
+                                    {weekDays.map((day) => {
+                                        const dateKey = toDateKey(day);
+                                        const items = tasks
+                                            .filter((task) => taskScheduleDate(task) === dateKey && (taskScheduleStart(task)?.hour ?? 19) === hour)
+                                            .sort((left, right) => itemTimelineValue(left) - itemTimelineValue(right));
+                                        return (
+                                        <div className="hour-cell" key={`${dateKey}-${hour}`}>
+                                            {items.map((task) => (
+                                                <button className="schedule-task" key={task.id} onClick={() => openTaskDetail?.(task)} type="button">
+                                                    <strong>{task.title}</strong>
+                                                    <span>{task.subject || "待归档"} · {task.start || "--:--"}{task.end ? `-${task.end}` : ""}</span>
+                                                </button>
+                                            ))}
+                                        </div>
+                                        );
+                                    })}
+                                </Fragment>
+                            ))}
+                        </div>
+                    </div>
                 </div>
                 <div className="legend"><span>学习</span><span>复盘</span><span>建议</span><span>空白时间</span></div>
             </div>
         </div>
     );
 }
+
 

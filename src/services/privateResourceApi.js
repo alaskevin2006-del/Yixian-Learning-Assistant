@@ -313,6 +313,31 @@ export async function createPrivateResourceSignedUrl(resourceId, userId, mode = 
     return { resource, signedUrl: data.signedUrl };
 }
 
+export async function deletePrivateResource(resourceId, userId) {
+    const resource = await getOwnedPrivateResource(resourceId, userId);
+    if (resource.storagePath) {
+        const { error: storageError } = await supabase.storage
+            .from(BUCKET)
+            .remove([resource.storagePath]);
+        if (storageError) {
+            console.warn("private resource storage delete failed", storageError);
+        }
+    }
+
+    const { error } = await supabase
+        .from("resources")
+        .delete()
+        .eq("id", resource.id)
+        .eq("scope", "private")
+        .eq("owner_user_id", userId);
+
+    if (error) {
+        console.warn("private resource row delete failed", error);
+        throw new Error("删除私有资料失败：请检查当前账号权限");
+    }
+    return resource;
+}
+
 export async function readPrivateTextPreview(resourceId, userId, options = {}) {
     void userId;
     return extractPrivateResourceText(resourceId, options);

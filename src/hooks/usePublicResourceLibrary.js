@@ -4,6 +4,7 @@ import {
     previewPublicResource,
     publicResourceMarkdown,
     queuePublicResourceUpload,
+    resolvePublicResourceOriginal,
     searchPublicResources,
 } from "../services/publicResourceApi";
 
@@ -28,7 +29,18 @@ export function usePublicResourceLibrary() {
         setPreviewResource(await previewPublicResource(resource));
     }
 
-    function downloadPublicResource(resource) {
+    async function downloadPublicResource(resource) {
+        const original = await resolvePublicResourceOriginal(resource);
+        if (original.url) {
+            const anchor = document.createElement("a");
+            anchor.href = original.url;
+            anchor.target = "_blank";
+            anchor.rel = "noopener noreferrer";
+            anchor.download = original.resource?.fileName || original.resource?.title || resource?.fileName || resource?.title || resource?.name || "public-resource";
+            anchor.click();
+            return;
+        }
+
         const blob = new Blob([publicResourceMarkdown(resource)], { type: "text/markdown;charset=utf-8" });
         const url = URL.createObjectURL(blob);
         const anchor = document.createElement("a");

@@ -62,6 +62,8 @@ export async function chatWithAI({
     subjectInstruction,
     selectedReferences,
     draftContext,
+    planningAction,
+    planningState,
     returnFullResponse = false,
 }) {
     const supabaseUrl = requireEnv("VITE_SUPABASE_URL").replace(/\/$/, "");
@@ -93,6 +95,8 @@ export async function chatWithAI({
                 subjectInstruction: String(subjectInstruction || ""),
                 selectedReferences: Array.isArray(selectedReferences) ? selectedReferences : [],
                 draftContext: draftContext && typeof draftContext === "object" ? draftContext : null,
+                planningAction,
+                planningState: planningState && typeof planningState === "object" ? planningState : null,
                 webSearch: normalizedMode === "review" ? { enabled: false } : normalizedWebSearch,
             }),
         });
@@ -113,6 +117,7 @@ export async function chatWithAI({
             webCitations: Array.isArray(payload?.webCitations) ? payload.webCitations : [],
             citations: Array.isArray(payload?.citations) ? payload.citations : [],
             drafts: Array.isArray(payload?.drafts) ? payload.drafts : [],
+            planningMeta: payload?.planningMeta && typeof payload.planningMeta === "object" ? payload.planningMeta : null,
         };
     }
     return payload.reply;

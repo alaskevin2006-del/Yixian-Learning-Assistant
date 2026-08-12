@@ -3,12 +3,46 @@ import { supabase, supabaseConfigError } from "./supabaseClient";
 const SEARCH_TOP_K = 8;
 const RETRIEVE_TOP_K = 5;
 
+function optionalEnv(name) {
+    return import.meta.env[name] || "";
+}
+
 function requireEnv(name) {
     const value = import.meta.env[name];
     if (!value) {
         throw new Error(`缺少前端环境变量：${name}`);
     }
     return value;
+}
+
+function shouldUsePublicResourceEndpoint(options = {}) {
+    if (!optionalEnv("VITE_PUBLIC_RESOURCE_SUPABASE_URL") || !optionalEnv("VITE_PUBLIC_RESOURCE_ANON_KEY")) {
+        return false;
+    }
+
+    if ((options.scope || "public") === "public") return true;
+
+    const references = Array.isArray(options.references) ? options.references : [];
+    return references.length > 0 && references.every((reference) => (
+        !reference.scope || reference.scope === "public"
+    ));
+}
+
+function resourceEndpointConfig(options = {}) {
+    if (shouldUsePublicResourceEndpoint(options)) {
+        const anonKey = optionalEnv("VITE_PUBLIC_RESOURCE_ANON_KEY");
+        return {
+            supabaseUrl: optionalEnv("VITE_PUBLIC_RESOURCE_SUPABASE_URL").replace(/\/$/, ""),
+            anonKey,
+            authorization: `Bearer ${anonKey}`,
+        };
+    }
+
+    return {
+        supabaseUrl: requireEnv("VITE_SUPABASE_URL").replace(/\/$/, ""),
+        anonKey: requireEnv("VITE_SUPABASE_ANON_KEY"),
+        authorization: "",
+    };
 }
 
 async function getCurrentAccessToken() {
@@ -28,14 +62,22 @@ function normalizeResult(result) {
     const section = String(metadata.section || result?.section || "");
     const pathFallback = [metadata.path, chapter, section].map((v) => String(v || "").trim()).filter(Boolean).join(" / ");
     const previewFallback = String(result?.summary || metadata.summary || "").trim();
+    const storagePath = String(result?.storagePath || result?.storage_path || metadata.storagePath || metadata.storage_path || "").trim();
+    const storageBucket = String(result?.storageBucket || result?.storage_bucket || metadata.storageBucket || metadata.storage_bucket || "").trim();
     return {
         resourceId: String(result?.resourceId || result?.resource_id || ""),
         fileId: String(result?.fileId || result?.resourceId || result?.resource_id || ""),
         chunkId: String(result?.chunkId || result?.chunk_id || ""),
         scope: result?.scope === "private" ? "private" : "public",
         title: String(result?.title || "未命名资源"),
+        fileName: String(result?.fileName || result?.file_name || metadata.fileName || metadata.file_name || metadata.originalName || ""),
         fileType: String(result?.fileType || result?.file_type || ""),
         path: String(result?.path || metadata.path || pathFallback || ""),
+        subject: String(result?.subject || metadata.subject || ""),
+        kind: String(result?.kind || result?.resourceType || metadata.kind || metadata.resourceType || ""),
+        tags: Array.isArray(result?.tags) ? result.tags : (Array.isArray(metadata.tags) ? metadata.tags : []),
+        storagePath,
+        storageBucket,
         chapter,
         section,
         pageStart: result?.pageStart ?? result?.page_start ?? metadata.pageStart ?? metadata.page_start ?? null,
@@ -43,8 +85,9 @@ function normalizeResult(result) {
         contentPreview: String(result?.contentPreview || result?.content_preview || result?.snippet || previewFallback || ""),
         score: Number(result?.score || 0),
         canPreview: result?.canPreview ?? true,
-        canDownload: result?.canDownload ?? false,
+        canDownload: result?.canDownload ?? Boolean(storagePath),
         canReference: result?.canReference ?? true,
+        metadata,
     };
 }
 
@@ -66,15 +109,14 @@ export async function searchResources(query, options = {}) {
     const trimmed = String(query || "").trim();
     if (!trimmed) return [];
 
-    const supabaseUrl = requireEnv("VITE_SUPABASE_URL").replace(/\/$/, "");
-    const anonKey = requireEnv("VITE_SUPABASE_ANON_KEY");
-    const accessToken = await getCurrentAccessToken();
-    const response = await fetch(`${supabaseUrl}/functions/v1/search-resources`, {
+    const endpoint = resourceEndpointConfig(options);
+    const accessToken = endpoint.authorization || `Bearer ${await getCurrentAccessToken()}`;
+    const response = await fetch(`${endpoint.supabaseUrl}/functions/v1/search-resources`, {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
-            apikey: anonKey,
-            Authorization: `Bearer ${accessToken}`,
+            apikey: endpoint.anonKey,
+            Authorization: accessToken,
         },
         body: JSON.stringify({
             query: trimmed,
@@ -82,6 +124,7 @@ export async function searchResources(query, options = {}) {
             topK: SEARCH_TOP_K,
             ...(options.subjectId ? { subjectId: options.subjectId } : {}),
             ...(Array.isArray(options.resourceIds) ? { resourceIds: options.resourceIds } : {}),
+            ...(options.filters && typeof options.filters === "object" ? { filters: options.filters } : {}),
         }),
     });
 
@@ -117,15 +160,14 @@ export async function retrieveContext(query) {
     const trimmed = String(query || "").trim();
     const hasReferences = Array.isArray(options.references) && options.references.length > 0;
     if (!trimmed && !hasReferences) return { contextText: "", citations: [] };
-    const supabaseUrl = requireEnv("VITE_SUPABASE_URL").replace(/\/$/, "");
-    const anonKey = requireEnv("VITE_SUPABASE_ANON_KEY");
-    const accessToken = await getCurrentAccessToken();
-    const response = await fetch(`${supabaseUrl}/functions/v1/retrieve-context`, {
+    const endpoint = resourceEndpointConfig(options);
+    const accessToken = endpoint.authorization || `Bearer ${await getCurrentAccessToken()}`;
+    const response = await fetch(`${endpoint.supabaseUrl}/functions/v1/retrieve-context`, {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
-            apikey: anonKey,
-            Authorization: `Bearer ${accessToken}`,
+            apikey: endpoint.anonKey,
+            Authorization: accessToken,
         },
         body: JSON.stringify({
             query: trimmed,
@@ -135,6 +177,7 @@ export async function retrieveContext(query) {
             ...(options.scope ? { scope: options.scope } : {}),
             ...(options.subjectId ? { subjectId: options.subjectId } : {}),
             ...(Array.isArray(options.resourceIds) ? { resourceIds: options.resourceIds } : {}),
+            ...(options.filters && typeof options.filters === "object" ? { filters: options.filters } : {}),
             ...(options.maxChars ? { maxChars: options.maxChars } : {}),
         }),
     });

@@ -42,6 +42,7 @@ import { listSubjectReviews, upsertSubjectReview } from "./services/reviewApi";
 import { listPlanningDrafts, updatePlanningDraft, upsertPlanningDraft } from "./services/planningDraftApi";
 import {
     createPrivateResourceSignedUrl,
+    deletePrivateResource as deletePrivateResourceRecord,
     listPrivateResources,
     uploadPrivateResource,
 } from "./services/privateResourceApi";
@@ -49,6 +50,8 @@ import "./FlowApp.css";
 
 const uid = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
 const todayKey = () => new Date().toISOString().slice(0, 10);
+const EMPTY_SUBJECT = { id: "", name: "", instruction: "" };
+const MOCK_TEXT_MARKERS = ["示例", "范例", "机器学习"];
 const DEMO_SOURCE = "demo";
 const DEMO_SUBJECT_ID = "subject-demo";
 const DEMO_SUBJECT_NAME = "范例：机器学习导论";
@@ -105,6 +108,12 @@ function timeRangeFor(index) {
     return ranges[index % ranges.length];
 }
 
+function hasMockMarker(value) {
+    const text = String(value || "").trim().toLowerCase();
+    if (!text) return false;
+    return MOCK_TEXT_MARKERS.some((marker) => text.includes(marker.toLowerCase()));
+}
+
 function isDemoItem(item = {}) {
     const id = String(item?.id || item?.resourceId || item?.resource_id || "");
     return item?.source === DEMO_SOURCE
@@ -114,14 +123,22 @@ function isDemoItem(item = {}) {
         || id.startsWith("subject-conv-demo-")
         || id.startsWith("draft-demo-")
         || id.startsWith("task-demo-")
-        || id.startsWith("resource-demo-");
+        || id.startsWith("resource-demo-")
+        || [
+            item?.title,
+            item?.name,
+            item?.subject,
+            item?.description,
+            item?.content,
+            item?.contentPreview,
+            item?.original,
+            item?.harvest,
+        ].some(hasMockMarker);
 }
 
 function displayItems(items = [], demoItems = []) {
     const list = Array.isArray(items) ? items : [];
-    const realItems = list.filter((item) => !isDemoItem(item));
-    if (realItems.length > 0) return realItems;
-    return list.length > 0 ? list : demoItems;
+    return list.filter((item) => !isDemoItem(item));
 }
 
 function demoTimestamp(offsetDays = 0, time = "09:00") {
@@ -531,24 +548,66 @@ function toLocalReview(row) {
     return {
         id: row?.id || `review-${uid()}`,
         original: row?.originalText || row?.original_text || "",
+        rawSummary: row?.metadata?.rawSummary || row?.metadata?.originalSummary || "",
+        polishedText: row?.polishedText || row?.polished_text || "",
         harvest: row?.harvestText || row?.harvest_text || row?.polishedText || row?.polished_text || "",
         status: row?.status || "pending",
         conversationId: row?.conversationId || row?.conversation_id || "",
+        keepOriginal: row?.metadata?.keepOriginal !== false,
+        metadata: row?.metadata || {},
+        createdAt: row?.createdAt || row?.created_at || "",
+        updatedAt: row?.updatedAt || row?.updated_at || "",
     };
 }
 
-function splitPlanningText(text) {
-    const source = String(text || "").trim();
-    if (!source) return [];
-    const dayBlocks = source.match(/(?:第[一二三四五六七八九十\d]+天|Day\s*\d+)[\s\S]*?(?=(?:第[一二三四五六七八九十\d]+天|Day\s*\d+)|$)/gi) || [];
-    if (dayBlocks.length > 1) return dayBlocks;
-    const bulletLines = source
-        .split(/\n+/)
-        .map((line) => line.replace(/^\s*(?:[-*•]|\d+[.、]|[一二三四五六七八九十]+[、.])\s*/, "").trim())
-        .filter((line) => line.length >= 10 && /目标|小时|复习|练习|题|概念|方法|总结|安排|学习|掌握|完成/.test(line));
-    if (bulletLines.length > 1) return bulletLines.slice(0, 6);
-    if (/两天|2天|二天/.test(source)) return ["第一天：基础概念与核心方法", "第二天：综合练习与复盘巩固"];
-    return [source];
+function parseReviewResult(reply, fallbackOriginal) {
+    const text = String(reply || "").trim();
+    let parsed = null;
+    try {
+        parsed = JSON.parse(text);
+    } catch {
+        const match = text.match(/\{[\s\S]*\}/);
+        if (match) {
+            try {
+                parsed = JSON.parse(match[0]);
+            } catch {
+                parsed = null;
+            }
+        }
+    }
+    if (!parsed || typeof parsed !== "object") {
+        return {
+            rawSummary: text || fallbackOriginal,
+            polishedText: text || fallbackOriginal,
+        };
+    }
+    const blockages = Array.isArray(parsed.candidateBlockages)
+        ? parsed.candidateBlockages.map((item) => [item.title, item.coreExplanation, item.suggestedReviewAction].filter(Boolean).join("：")).filter(Boolean)
+        : [];
+    const segments = Array.isArray(parsed.segments)
+        ? parsed.segments.map((item) => [item.title, item.progressNote].filter(Boolean).join("：")).filter(Boolean)
+        : [];
+    const rawSummary = String(
+        parsed.originalSummary
+        || parsed.rawSummary
+        || parsed.summary
+        || [...segments, ...blockages, ...(parsed.mistakes || [])].join("\n")
+        || fallbackOriginal
+    ).trim();
+    const polishedText = String(
+        parsed.polishedSummary
+        || parsed.polishedText
+        || parsed.harvestText
+        || [...blockages, ...(parsed.reflections || [])].join("\n")
+        || rawSummary
+    ).trim();
+    return { rawSummary, polishedText };
+}
+
+function hasHarvestSaveIntent(text) {
+    const normalized = String(text || "").replace(/\s+/g, "");
+    return /(收获|复盘|入库|存档|保存|沉淀)/.test(normalized)
+        && /(放到复盘|放进复盘|进入复盘|加入复盘|核心收获|形成.*收获|入库|存档|保存)/.test(normalized);
 }
 
 export default function FlowApp() {
@@ -556,13 +615,13 @@ export default function FlowApp() {
     const [planTab, setPlanTab] = useLocalState("flow.planTab", "ai");
     const [subjectTab, setSubjectTab] = useLocalState("flow.subjectTab", "chat");
     const [chatTab, setChatTab] = useLocalState("flow.chatTab", "chat");
-    const [subjects, setSubjects] = useLocalState("flow.subjects", DEFAULT_SUBJECTS);
-    const [activeSubjectId, setActiveSubjectId] = useLocalState("flow.activeSubjectId", DEFAULT_SUBJECTS[0].id);
+    const [subjects, setSubjects] = useLocalState("flow.subjects", []);
+    const [activeSubjectId, setActiveSubjectId] = useLocalState("flow.activeSubjectId", "");
     const [freeConversations, setFreeConversations] = useLocalState("flow.freeConversations", []);
     const [subjectConversations, setSubjectConversations] = useLocalState("flow.subjectConversations", {});
-    const [planningConversations, setPlanningConversations] = useLocalState("flow.planningConversations", demoPlanningConversations());
+    const [planningConversations, setPlanningConversations] = useLocalState("flow.planningConversations", []);
     const [activeFreeId, setActiveFreeId] = useLocalState("flow.activeFreeId", "");
-    const [activePlanningId, setActivePlanningId] = useLocalState("flow.activePlanningId", DEMO_PLANNING_ID);
+    const [activePlanningId, setActivePlanningId] = useLocalState("flow.activePlanningId", "");
     const [activeSubjectConversationId, setActiveSubjectConversationId] = useLocalState("flow.activeSubjectConversationId", "");
     const [messages, setMessages] = useLocalState("flow.messages", {});
     const [draftsByConversation, setDraftsByConversation] = useLocalState("flow.draftsByConversation", {});
@@ -625,57 +684,73 @@ export default function FlowApp() {
         pomodoroPhase: "focus",
     });
     const [finishForm, setFinishForm] = useState({ status: "done", note: "" });
+    const [reviewDraft, setReviewDraft] = useState({
+        original: "",
+        rawSummary: "",
+        polishedText: "",
+        keepOriginal: true,
+        loading: false,
+        error: "",
+    });
 
-    const displaySubjects = displayItems(subjects, DEFAULT_SUBJECTS);
-    const displayPlanningConversations = displayItems(planningConversations, demoPlanningConversations());
+    const displaySubjects = displayItems(subjects);
+    const displayPlanningConversations = displayItems(planningConversations);
     const activeSubject = useMemo(
-        () => displaySubjects.find((subject) => subject.id === activeSubjectId) || displaySubjects[0] || DEFAULT_SUBJECTS[0],
+        () => displaySubjects.find((subject) => subject.id === activeSubjectId) || displaySubjects[0] || EMPTY_SUBJECT,
         [activeSubjectId, displaySubjects],
     );
     const activePlanningConversation = displayPlanningConversations.find((item) => item.id === activePlanningId) || displayPlanningConversations[0];
     const planningConversationId = activePlanningConversation?.id || "";
     const storedDrafts = draftsByConversation[planningConversationId] || [];
-    const currentDrafts = isDemoItem(activePlanningConversation)
-        ? displayItems(storedDrafts, demoPlanningDrafts(planningConversationId))
-        : storedDrafts;
+    const currentDrafts = displayItems(storedDrafts);
     const storedSubjectConversations = subjectConversations[activeSubject?.id] || [];
-    const currentSubjectConversations = isDemoItem(activeSubject)
-        ? displayItems(storedSubjectConversations, demoSubjectConversations())
-        : storedSubjectConversations;
+    const currentSubjectConversations = displayItems(storedSubjectConversations);
     const storedSubjectResources = subjectResources[activeSubject?.id] || [];
-    const currentSubjectResources = isDemoItem(activeSubject)
-        ? displayItems(storedSubjectResources, demoSubjectResources())
-        : storedSubjectResources;
+    const currentSubjectResources = displayItems(storedSubjectResources);
+    const sidebarSubjectConversations = useMemo(() => Object.fromEntries(displaySubjects.map((subject) => {
+        const stored = subjectConversations[subject.id] || [];
+        return [
+            subject.id,
+            displayItems(stored),
+        ];
+    })), [displaySubjects, subjectConversations]);
     const storedReviews = subjectReviews[activeSubject?.id] || [];
-    const currentReviews = isDemoItem(activeSubject)
-        ? displayItems(storedReviews, demoSubjectReviews())
-        : storedReviews;
-    const displayTasks = displayItems(tasks, demoLearningTasks());
+    const currentReviews = displayItems(storedReviews);
+    const displayTasks = displayItems(tasks);
     const freeConversation = freeConversations.find((item) => item.id === activeFreeId);
     const subjectConversation = currentSubjectConversations.find((item) => item.id === activeSubjectConversationId);
     const chatKey = view === "free-chat"
         ? `free:${activeFreeId || "new"}`
         : `subject:${activeSubjectConversationId || activeSubject?.id}`;
-    const visibleMessages = messages[chatKey]
-        || (isDemoItem(subjectConversation) ? demoSubjectMessages() : []);
-    const planningMessages = messages[`planning:${planningConversationId}`]
-        || (isDemoItem(activePlanningConversation) ? demoPlanningMessages() : []);
+    const visibleMessages = displayItems(messages[chatKey] || []);
+    const planningMessages = displayItems(messages[`planning:${planningConversationId}`] || []);
 
     useEffect(() => {
+        setSubjects((prev) => displayItems(prev));
         setFreeConversations((prev) => prev.filter((conversation) => (
-            !isBlankConversationTitle(conversation.title) || (messages[`free:${conversation.id}`] || []).length > 0
+            !isDemoItem(conversation) && (!isBlankConversationTitle(conversation.title) || (messages[`free:${conversation.id}`] || []).length > 0)
         )));
         setSubjectConversations((prev) => Object.fromEntries(Object.entries(prev).map(([subjectId, list]) => [
             subjectId,
-            (list || []).filter((conversation) => (
+            displayItems((list || []).filter((conversation) => (
                 !isBlankConversationTitle(conversation.title) || (messages[`subject:${conversation.id}`] || []).length > 0
-            )),
+            ))),
         ])));
         setPlanningConversations((prev) => prev.filter((conversation) => (
+            !isDemoItem(conversation) && (
             !isBlankConversationTitle(conversation.title)
             || (messages[`planning:${conversation.id}`] || []).length > 0
             || (draftsByConversation[conversation.id] || []).length > 0
+            )
         )));
+        setDraftsByConversation((prev) => Object.fromEntries(Object.entries(prev).map(([conversationId, list]) => [
+            conversationId,
+            displayItems(list),
+        ])));
+        setTasks((prev) => displayItems(prev));
+        setSubjectResources((prev) => Object.fromEntries(Object.entries(prev).map(([subjectId, list]) => [subjectId, displayItems(list)])));
+        setSubjectReviews((prev) => Object.fromEntries(Object.entries(prev).map(([subjectId, list]) => [subjectId, displayItems(list)])));
+        setMessages((prev) => Object.fromEntries(Object.entries(prev).map(([key, list]) => [key, displayItems(list)])));
     // Run once on startup to clear stale empty local rows.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
@@ -687,22 +762,26 @@ export default function FlowApp() {
     }, [activePlanningId, planningConversations, setActivePlanningId]);
 
     useEffect(() => {
-        setSubjects((prev) => {
-            let changed = false;
-            const next = prev.map((subject) => {
-                if (subject.id === "subject-vision" || subject.name === "视力学" || subject.name === "示例学科" || isDemoItem(subject)) {
-                    changed = true;
-                    return {
-                        ...DEFAULT_SUBJECTS[0],
-                        id: DEMO_SUBJECT_ID,
-                    };
-                }
-                return subject;
-            });
-            return changed ? next : prev;
-        });
-        if (activeSubjectId === "subject-vision") setActiveSubjectId(DEMO_SUBJECT_ID);
-    }, [activeSubjectId, setActiveSubjectId, setSubjects]);
+        if (activeSubjectId && !displaySubjects.some((subject) => subject.id === activeSubjectId)) {
+            setActiveSubjectId(displaySubjects[0]?.id || "");
+        }
+        if (activePlanningId && !displayPlanningConversations.some((conversation) => conversation.id === activePlanningId)) {
+            setActivePlanningId(displayPlanningConversations[0]?.id || "");
+        }
+        if (activeFreeId && !freeConversations.some((conversation) => !isDemoItem(conversation) && conversation.id === activeFreeId)) {
+            setActiveFreeId("");
+        }
+    }, [
+        activeFreeId,
+        activePlanningId,
+        activeSubjectId,
+        displayPlanningConversations,
+        displaySubjects,
+        freeConversations,
+        setActiveFreeId,
+        setActivePlanningId,
+        setActiveSubjectId,
+    ]);
 
     useEffect(() => {
         if (!supabase) return undefined;
@@ -979,6 +1058,13 @@ export default function FlowApp() {
         setSubjectTab("chat");
     }
 
+    function openSubjectConversation(subjectId, conversationId) {
+        setActiveSubjectId(subjectId);
+        setActiveSubjectConversationId(conversationId);
+        setSubjectTab("chat");
+        setView("chat");
+    }
+
     function deleteSubject(subjectId) {
         setSubjects((prev) => {
             const next = prev.filter((subject) => subject.id !== subjectId);
@@ -991,6 +1077,20 @@ export default function FlowApp() {
     }
 
     function newPlanningConversation() {
+        const isUnstarted = (conversationId) => (
+            (messages[`planning:${conversationId}`] || []).length === 0
+            && (draftsByConversation[conversationId] || []).length === 0
+        );
+        if (planningConversationId && isUnstarted(planningConversationId)) {
+            setPlanTab("ai");
+            return;
+        }
+        const existingDraft = planningConversations.find((conversation) => isUnstarted(conversation.id));
+        if (existingDraft) {
+            setActivePlanningId(existingDraft.id);
+            setPlanTab("ai");
+            return;
+        }
         const conversation = makeConversation("规划对话");
         setPlanningConversations((prev) => [conversation, ...prev]);
         setActivePlanningId(conversation.id);
@@ -1092,23 +1192,27 @@ export default function FlowApp() {
         }
     }
 
-    function startSubjectConversation() {
+    function startSubjectConversation(subjectId = activeSubject.id) {
+        const subject = displaySubjects.find((item) => item.id === subjectId) || activeSubject;
+        const subjectConversationsForStart = sidebarSubjectConversations[subjectId] || [];
         const isUnstarted = (conversationId) => (messages[`subject:${conversationId}`] || []).length === 0;
-        if (activeSubjectConversationId && isUnstarted(activeSubjectConversationId)) {
+        if (activeSubjectId === subjectId && activeSubjectConversationId && isUnstarted(activeSubjectConversationId)) {
             setView("chat");
             return;
         }
-        const existingDraft = currentSubjectConversations.find((conversation) => isUnstarted(conversation.id));
+        const existingDraft = subjectConversationsForStart.find((conversation) => isUnstarted(conversation.id));
         if (existingDraft) {
+            setActiveSubjectId(subjectId);
             setActiveSubjectConversationId(existingDraft.id);
             setView("chat");
             return;
         }
-        const conversation = makeConversation(`${activeSubject.name}对话`);
+        const conversation = makeConversation(`${subject.name}对话`);
         setSubjectConversations((prev) => ({
             ...prev,
-            [activeSubject.id]: [conversation, ...(prev[activeSubject.id] || [])],
+            [subjectId]: [conversation, ...(prev[subjectId] || [])],
         }));
+        setActiveSubjectId(subjectId);
         setActiveSubjectConversationId(conversation.id);
         setView("chat");
     }
@@ -1226,17 +1330,66 @@ export default function FlowApp() {
         return tempAttachments.filter((item) => selected.has(item.id));
     }
 
+    function hasDraftGenerationIntent(text) {
+        const normalized = String(text || "").replace(/\s+/g, "");
+        return [
+            /生成任务草案/,
+            /确认生成/,
+            /可以生成/,
+            /开始生成/,
+            /帮我生成.*任务/,
+            /生成.*计划任务/,
+            /生成.*学习计划/,
+            /生成.*任务/,
+            /生成.*草案/,
+            /生成.*日程/,
+            /^生成$/,
+            /^确认$/,
+            /^可以$/,
+        ].some((pattern) => pattern.test(normalized));
+    }
+
+    function hasScheduleAddIntent(text) {
+        const normalized = String(text || "").replace(/\s+/g, "");
+        return [
+            /加入日程/,
+            /加到日程/,
+            /添加到日程/,
+            /放进日程/,
+            /放入日程/,
+            /同步到日程/,
+            /加入任务/,
+            /加到任务/,
+            /添加到任务/,
+            /创建任务/,
+            /生成并加入日程/,
+            /生成.*并.*加入日程/,
+            /生成.*并.*加到日程/,
+            /生成.*后.*加入日程/,
+            /生成.*后.*加到日程/,
+            /安排进日程/,
+            /一键加入/,
+            /全部加入/,
+            /全都加入/,
+        ].some((pattern) => pattern.test(normalized));
+    }
+
     async function askAIWithOptionalAttachments({ text, history, context, conversationType, subjectId, subjectInstruction, draftContext }) {
-        const webSearch = { enabled: webEnabled, mode: webEnabled ? "always" : "auto", topK: 5 };
+        const isPlanning = conversationType === "planning";
+        const planningAction = isPlanning && (hasDraftGenerationIntent(text) || hasScheduleAddIntent(text)) ? "generate_drafts" : "chat";
+        const webSearch = isPlanning
+            ? { enabled: false, mode: "auto", topK: 5 }
+            : { enabled: webEnabled, mode: webEnabled ? "always" : "auto", topK: 5 };
         const attachments = selectedTempAttachments();
         if (attachments.length) {
-            const question = conversationType === "planning"
+            const question = isPlanning
                 ? [
                     text,
                     "",
-                    "请结合附件、引用资料和联网结果制定学习计划。回答中先给自然语言建议，最后附加一个合法 JSON 对象：",
-                    '{"drafts":[{"title":"","subjectName":"","description":"","plannedStart":"","plannedEnd":""}]}',
-                    "每个 drafts 项都要有明确任务标题、学科、说明、开始时间和结束时间。",
+                    "当前是 AI 规划页。请先根据附件和引用资料帮助用户澄清学习目标、基础、期限、可用时间和学习范围。",
+                    planningAction === "generate_drafts"
+                        ? "用户已经确认生成任务草案，可以在自然语言回复后附加 drafts JSON。"
+                        : "当前默认禁止生成 drafts JSON；如果信息不足请追问，如果信息较充分请先给规划摘要并询问是否生成任务草案。",
                 ].join("\n")
                 : text;
             const result = await askWithTempAttachments({
@@ -1251,7 +1404,7 @@ export default function FlowApp() {
                 reply: result.answer,
                 citations: [...(context.citations || []), ...(result.citations || [])],
                 webCitations: result.webCitations || [],
-                drafts: conversationType === "planning" ? extractDraftsFromText(result.answer) : [],
+                drafts: isPlanning && planningAction === "generate_drafts" ? extractDraftsFromText(result.answer) : [],
             };
         }
         return chatWithAI({
@@ -1264,6 +1417,7 @@ export default function FlowApp() {
             subjectInstruction,
             selectedReferences,
             draftContext,
+            planningAction,
             webSearch,
             returnFullResponse: true,
         });
@@ -1280,15 +1434,10 @@ export default function FlowApp() {
         }
     }
 
-    function draftsFromAI(rawDrafts, conversationId, fallbackText, replyText = "", defaultSubject = activeSubject?.name) {
-        const source = Array.isArray(rawDrafts) && rawDrafts.length
-            ? rawDrafts
-            : splitPlanningText(replyText || fallbackText).map((part, index) => ({
-                title: oneLine(part || fallbackText || "学习任务", 30),
-                description: part || fallbackText || "",
-                plannedStart: `${localDateKey(index)}T${timeRangeFor(index)[0]}`,
-                plannedEnd: `${localDateKey(index)}T${timeRangeFor(index)[1]}`,
-            }));
+    function draftsFromAI(rawDrafts, conversationId, fallbackText, defaultSubject = activeSubject?.name) {
+        if (!Array.isArray(rawDrafts) || rawDrafts.length === 0) return [];
+
+        const source = rawDrafts;
         return source.map((item, index) => {
             const [fallbackStart, fallbackEnd] = timeRangeFor(index);
             const start = timeFromValue(item?.start || item?.startTime || item?.plannedStart) || fallbackStart;
@@ -1307,6 +1456,84 @@ export default function FlowApp() {
                 status: "draft",
             };
         });
+    }
+
+    function taskFromDraft(draft) {
+        const fromDemo = isDemoItem(draft);
+        return {
+            id: `task-${uid()}`,
+            title: draft.title,
+            subject: draft.subject || activeSubject.name,
+            subjectId: draft.subjectId || activeSubject.id,
+            date: draft.date || todayKey(),
+            start: draft.start || "19:00",
+            end: draft.end || "20:00",
+            description: draft.description,
+            status: "pending",
+            source: fromDemo ? "manual" : "planning-draft",
+            plannedDate: draft.date || todayKey(),
+            startTime: draft.start || "19:00",
+            endTime: draft.end || "20:00",
+            slot: `${draft.start || "19:00"}-${draft.end || "20:00"}`,
+            draftId: fromDemo ? "" : draft.id,
+        };
+    }
+
+    function persistTaskFromDraft(task, draft) {
+        const fromDemo = isDemoItem(draft);
+        if (!currentUser?.id || fromDemo) return;
+
+        const subject = subjects.find((item) => item.name === task.subject);
+        createLearningTask({
+            ...task,
+            clientId: task.id,
+            subjectId: subject?.id || null,
+            draftId: draft.id,
+            conversationId: isLocalConversationId(draft.conversationId) ? null : draft.conversationId,
+            plannedDate: task.date,
+            slot: `${task.start}-${task.end}`,
+            source: "planning-draft",
+            metadata: { description: task.description, start: task.start, end: task.end, draftClientId: draft.id },
+        }, { userId: currentUser.id })
+            .then((saved) => {
+                setTasks((prev) => prev.map((item) => (item.id === task.id ? { ...item, remoteId: saved.id } : item)));
+                if (!String(draft.id).startsWith("draft-")) {
+                    updatePlanningDraft(draft.id, { status: "confirmed", createdTaskId: saved.id }, { userId: currentUser.id }).catch(() => null);
+                }
+            })
+            .catch(() => null);
+    }
+
+    function confirmDrafts(drafts, options = {}) {
+        const uniqueDrafts = [];
+        const seen = new Set();
+        (drafts || []).forEach((draft) => {
+            if (!draft || draft.status === "confirmed") return;
+            const key = draft.id || `${draft.title}:${draft.date}:${draft.start}`;
+            if (seen.has(key)) return;
+            seen.add(key);
+            uniqueDrafts.push(draft);
+        });
+
+        if (!uniqueDrafts.length) return [];
+
+        const tasksToAdd = uniqueDrafts.map(taskFromDraft);
+        setTasks((prev) => [...tasksToAdd, ...prev]);
+        tasksToAdd.forEach((task, index) => persistTaskFromDraft(task, uniqueDrafts[index]));
+
+        setDraftsByConversation((prev) => {
+            const next = { ...prev };
+            uniqueDrafts.forEach((draft) => {
+                const conversationId = draft.conversationId;
+                next[conversationId] = (next[conversationId] || []).map((item) => (
+                    item.id === draft.id ? { ...item, status: "confirmed" } : item
+                ));
+            });
+            return next;
+        });
+
+        if (options.openSchedule) setPlanTab("schedule");
+        return tasksToAdd;
     }
 
     async function sendMessage() {
@@ -1390,6 +1617,13 @@ export default function FlowApp() {
                 [key]: [...(prev[key] || []), assistantMessage],
             }));
             await saveConversationMessage(conversationId, assistantMessage);
+            if (view === "chat" && hasHarvestSaveIntent(text)) {
+                addPendingReviewFromChat({
+                    userText: text,
+                    assistantText: result.reply,
+                    conversationId,
+                });
+            }
         } catch (error) {
             const message = error?.message || "AI 请求失败";
             setAiError(message);
@@ -1405,6 +1639,7 @@ export default function FlowApp() {
     async function sendPlanningMessage() {
         const text = input.trim();
         if (!text || aiStatus === "loading") return;
+        const autoAddToSchedule = hasScheduleAddIntent(text);
         let conversationId = planningConversationId;
         if (!conversationId) {
             const remote = currentUser?.id
@@ -1437,6 +1672,26 @@ export default function FlowApp() {
         setAiStatus("loading");
         setAiError("");
         await saveConversationMessage(conversationId, userMessage);
+
+        const existingDrafts = (draftsByConversation[conversationId] || []).filter((draft) => draft.status !== "confirmed");
+        if (autoAddToSchedule && existingDrafts.length > 0 && !hasDraftGenerationIntent(text)) {
+            const addedTasks = confirmDrafts(existingDrafts, { openSchedule: true });
+            const assistantMessage = {
+                id: `msg-${uid()}`,
+                role: "assistant",
+                content: addedTasks.length
+                    ? `已将 ${addedTasks.length} 个任务草案加入日程。你可以在「学习日程」里查看和调整时间。`
+                    : "当前没有可加入日程的任务草案。",
+            };
+            setMessages((prev) => ({
+                ...prev,
+                [key]: [...(prev[key] || []), assistantMessage],
+            }));
+            await saveConversationMessage(conversationId, assistantMessage);
+            setAiStatus("idle");
+            return;
+        }
+
         try {
             const context = await buildReferenceContext(text);
             const result = await askAIWithOptionalAttachments({
@@ -1446,8 +1701,21 @@ export default function FlowApp() {
                 conversationType: "planning",
                 draftContext: { existingDraftCount: (draftsByConversation[conversationId] || []).length },
             });
-            const assistantMessage = { id: `msg-${uid()}`, role: "assistant", content: result.reply };
-            const nextDrafts = draftsFromAI(result.drafts, conversationId, text, result.reply, activeSubject.name);
+            const nextDrafts = draftsFromAI(result.drafts, conversationId, text, activeSubject.name);
+            const addedTasks = autoAddToSchedule ? confirmDrafts(nextDrafts, { openSchedule: true }) : [];
+            const assistantMessage = {
+                id: `msg-${uid()}`,
+                role: "assistant",
+                content: [
+                    result.reply,
+                    addedTasks.length
+                        ? `已按你的指令将 ${addedTasks.length} 个任务加入日程。你可以在「学习日程」里查看和调整。`
+                        : "",
+                ].filter(Boolean).join("\n\n"),
+            };
+            const draftsToStore = autoAddToSchedule
+                ? nextDrafts.map((draft) => ({ ...draft, status: "confirmed" }))
+                : nextDrafts;
             autoNameConversation("planning", conversationId, text);
             setMessages((prev) => ({
                 ...prev,
@@ -1455,10 +1723,10 @@ export default function FlowApp() {
             }));
             setDraftsByConversation((prev) => ({
                 ...prev,
-                [conversationId]: [...nextDrafts, ...(prev[conversationId] || [])],
+                [conversationId]: [...draftsToStore, ...(prev[conversationId] || [])],
             }));
             if (currentUser?.id && !isLocalConversationId(conversationId)) {
-                nextDrafts.forEach((draft) => {
+                draftsToStore.forEach((draft) => {
                     const subject = subjects.find((item) => item.name === draft.subject);
                     upsertPlanningDraft({
                         conversationId,
@@ -1486,13 +1754,9 @@ export default function FlowApp() {
         } catch (error) {
             const message = error?.message || "AI 规划请求失败";
             setAiError(message);
-            setDraftsByConversation((prev) => ({
-                ...prev,
-                [conversationId]: [...draftsFromAI([], conversationId, text, "", activeSubject.name), ...(prev[conversationId] || [])],
-            }));
             setMessages((prev) => ({
                 ...prev,
-                [key]: [...(prev[key] || []), { id: `msg-${uid()}`, role: "assistant", content: `AI 规划失败，已先生成本地任务草案：${message}` }],
+                [key]: [...(prev[key] || []), { id: `msg-${uid()}`, role: "assistant", content: `AI 规划失败：${message}` }],
             }));
         } finally {
             setAiStatus("idle");
@@ -1500,52 +1764,15 @@ export default function FlowApp() {
     }
 
     function confirmDraft(draft) {
-        const fromDemo = isDemoItem(draft);
-        const task = {
-            id: `task-${uid()}`,
-            title: draft.title,
-            subject: draft.subject || activeSubject.name,
-            subjectId: draft.subjectId || activeSubject.id,
-            date: draft.date || todayKey(),
-            start: draft.start || "19:00",
-            end: draft.end || "20:00",
-            description: draft.description,
-            status: "pending",
-            source: fromDemo ? "manual" : "planning-draft",
-            plannedDate: draft.date || todayKey(),
-            startTime: draft.start || "19:00",
-            endTime: draft.end || "20:00",
-            slot: `${draft.start || "19:00"}-${draft.end || "20:00"}`,
-            draftId: fromDemo ? "" : draft.id,
-        };
-        setTasks((prev) => [task, ...prev]);
-        if (currentUser?.id && !fromDemo) {
-            const subject = subjects.find((item) => item.name === task.subject);
-            createLearningTask({
-                ...task,
-                clientId: task.id,
-                subjectId: subject?.id || null,
-                draftId: draft.id,
-                conversationId: isLocalConversationId(draft.conversationId) ? null : draft.conversationId,
-                plannedDate: task.date,
-                slot: `${task.start}-${task.end}`,
-                source: "planning-draft",
-                metadata: { description: task.description, start: task.start, end: task.end, draftClientId: draft.id },
-            }, { userId: currentUser.id })
-                .then((saved) => {
-                    setTasks((prev) => prev.map((item) => (item.id === task.id ? { ...item, remoteId: saved.id } : item)));
-                    if (!String(draft.id).startsWith("draft-")) {
-                        updatePlanningDraft(draft.id, { status: "confirmed", createdTaskId: saved.id }, { userId: currentUser.id }).catch(() => null);
-                    }
-                })
-                .catch(() => null);
+        confirmDrafts([draft], { openSchedule: true });
+    }
+
+    function confirmCurrentDrafts() {
+        const drafts = draftsByConversation[planningConversationId] || [];
+        const addedTasks = confirmDrafts(drafts, { openSchedule: true });
+        if (addedTasks.length) {
+            setNotice(`已将 ${addedTasks.length} 个任务草案加入日程`);
         }
-        setDraftsByConversation((prev) => ({
-            ...prev,
-            [draft.conversationId]: (prev[draft.conversationId] || []).map((item) => (
-                item.id === draft.id ? { ...item, status: "confirmed" } : item
-            )),
-        }));
     }
 
     function deleteDraft(draft) {
@@ -1662,6 +1889,33 @@ export default function FlowApp() {
         setModal("timer");
     }
 
+    function goToCurrentStudy() {
+        const subjectId = timer.subjectId || subjects.find((subject) => subject.name === timer.subject)?.id || activeSubject?.id;
+        if (timer.taskId || timer.taskRemoteId) {
+            if (subjectId) {
+                openSubject(subjectId);
+                return;
+            }
+            setView("plan");
+            setPlanTab("tasks");
+            return;
+        }
+        newFreeConversation();
+    }
+
+    function openCurrentTaskDetail() {
+        const task = tasks.find((item) => (
+            item.id === timer.taskId
+            || item.remoteId === timer.taskRemoteId
+        ));
+        setDetailTask(task || {
+            title: timer.taskTitle || "当前学习",
+            subject: timer.subject || activeSubject.name,
+            description: timer.taskId || timer.taskRemoteId ? "暂无更多任务说明。" : "暂无进行中的学习任务。",
+        });
+        setModal("task-detail");
+    }
+
     async function searchSources() {
         const query = sourceQuery.trim();
         if (!query) return;
@@ -1685,12 +1939,30 @@ export default function FlowApp() {
         }
     }
 
-    async function openPrivateResource(resource) {
+    async function openPrivateResource(resource, mode = "preview") {
         try {
-            const { signedUrl } = await createPrivateResourceSignedUrl(resource.resourceId || resource.id, currentUser?.id);
+            const { signedUrl } = await createPrivateResourceSignedUrl(resource.resourceId || resource.id, currentUser?.id, mode);
             window.open(signedUrl, "_blank", "noopener,noreferrer");
         } catch {
             setNotice("无法打开该资料");
+        }
+    }
+
+    async function deletePrivateResource(resource) {
+        if (!currentUser?.id) {
+            openAuth();
+            return;
+        }
+        try {
+            await deletePrivateResourceRecord(resource.resourceId || resource.id, currentUser.id);
+            const ids = new Set([resource.id, resource.resourceId].filter(Boolean).map(String));
+            setPrivateResources((prev) => prev.filter((item) => !ids.has(String(item.id))));
+            setSubjectResources((prev) => Object.fromEntries(Object.entries(prev).map(([subjectId, list]) => [
+                subjectId,
+                (list || []).filter((item) => !ids.has(String(item.resourceId || item.id))),
+            ])));
+        } catch (error) {
+            setNotice(error?.message || "删除私有资料失败");
         }
     }
 
@@ -1721,20 +1993,20 @@ export default function FlowApp() {
         setModal("");
     }
 
-    function removeSubjectResource(id) {
+    function removeSubjectResource(id, subjectId = activeSubject.id) {
         setSubjectResources((prev) => ({
             ...prev,
-            [activeSubject.id]: (prev[activeSubject.id] || []).filter((item) => item.id !== id),
+            [subjectId]: (prev[subjectId] || []).filter((item) => item.id !== id),
         }));
         if (currentUser?.id && !String(id).startsWith("resource-")) {
             removeSubjectResourceRecord(id, { userId: currentUser.id }).catch(() => null);
         }
     }
 
-    function openSubjectResource(resource) {
+    function openSubjectResource(resource, mode = "preview") {
         if (!resource) return;
         if (resource.scope === "private") {
-            openPrivateResource(resource);
+            openPrivateResource(resource, mode);
             return;
         }
         openPublicResource(resource);
@@ -1811,26 +2083,208 @@ export default function FlowApp() {
         if (!activeSubject?.id) return;
         const pending = currentReviews.filter((item) => item.status !== "confirmed");
         if (!pending.length) return;
-        setSubjectReviews((prev) => ({
-            ...prev,
-            [activeSubject.id]: (prev[activeSubject.id] || []).map((item) => (
-                item.status === "confirmed" ? item : { ...item, status: "confirmed" }
-            )),
-        }));
+        const markConfirmed = () => {
+            setSubjectReviews((prev) => ({
+                ...prev,
+                [activeSubject.id]: (prev[activeSubject.id] || []).map((item) => (
+                    item.status === "confirmed" ? item : { ...item, status: "confirmed" }
+                )),
+            }));
+        };
+        if (!currentUser?.id || String(activeSubject.id).startsWith("subject-")) {
+            markConfirmed();
+            setNotice("复盘收获已在本地确认；登录并使用真实学科后才会写入 Supabase");
+            return;
+        }
         if (currentUser?.id && !String(activeSubject.id).startsWith("subject-")) {
-            pending.forEach((item) => {
+            Promise.allSettled(pending.map((item) => (
                 upsertSubjectReview({
                     id: String(item.id || "").startsWith("review-") ? undefined : item.id,
                     subjectId: activeSubject.id,
                     conversationId: item.conversationId || null,
                     originalText: item.original || item.originalText || "",
+                    polishedText: item.polishedText || "",
                     harvestText: item.harvest || item.harvestText || item.polishedText || "",
                     status: "confirmed",
                     metadata: item.metadata || {},
-                }, { userId: currentUser.id }).catch(() => null);
+                }, { userId: currentUser.id })
+            ))).then((results) => {
+                if (results.some((result) => result.status === "rejected")) {
+                    setNotice("复盘确认失败：请检查 Supabase subject_review_items 表和 RLS 权限");
+                    return;
+                }
+                markConfirmed();
+                setNotice("复盘收获已确认入库");
             });
         }
-        setNotice("复盘收获已确认入库");
+    }
+
+    function addPendingReviewFromChat({ userText, assistantText, conversationId }) {
+        if (!activeSubject?.id) return;
+        const harvest = String(assistantText || "").trim();
+        if (!harvest) return;
+        const item = {
+            id: `review-${uid()}`,
+            original: userText,
+            rawSummary: "",
+            polishedText: harvest,
+            harvest,
+            status: "pending",
+            conversationId: isLocalConversationId(conversationId) ? "" : conversationId || "",
+            keepOriginal: true,
+            metadata: {
+                source: "chat-harvest-intent",
+                storageTable: "subject_review_items",
+                conversationTitle: subjectConversation?.title || "",
+            },
+            createdAt: new Date().toISOString(),
+        };
+        setSubjectReviews((prev) => ({
+            ...prev,
+            [activeSubject.id]: [item, ...(prev[activeSubject.id] || [])],
+        }));
+        setChatTab("review");
+        setNotice("已放入待确认收获，保存位置：Supabase subject_review_items");
+        if (currentUser?.id && !String(activeSubject.id).startsWith("subject-")) {
+            upsertSubjectReview({
+                subjectId: activeSubject.id,
+                conversationId: item.conversationId || null,
+                originalText: userText,
+                polishedText: harvest,
+                harvestText: harvest,
+                status: "pending",
+                metadata: item.metadata,
+            }, { userId: currentUser.id })
+                .then((saved) => {
+                    if (!saved?.id) return;
+                    setSubjectReviews((prev) => ({
+                        ...prev,
+                        [activeSubject.id]: (prev[activeSubject.id] || []).map((review) => (
+                            review.id === item.id ? toLocalReview(saved) : review
+                        )),
+                    }));
+                    setNotice("待确认收获已写入 Supabase subject_review_items");
+                })
+                .catch((error) => {
+                    setSubjectReviews((prev) => ({
+                        ...prev,
+                        [activeSubject.id]: (prev[activeSubject.id] || []).filter((review) => review.id !== item.id),
+                    }));
+                    setNotice(error?.message || "收获写入失败：请检查 Supabase subject_review_items 表");
+                });
+        } else {
+            setNotice("已本地暂存为待确认收获；登录并使用真实学科后才会写入 Supabase");
+        }
+    }
+
+    async function summarizeReviewDraft() {
+        const original = reviewDraft.original.trim();
+        if (!original) {
+            setReviewDraft((prev) => ({ ...prev, error: "请先输入原始自述。" }));
+            return;
+        }
+        setReviewDraft((prev) => ({ ...prev, loading: true, error: "" }));
+        try {
+            const reply = await chatWithAI({
+                message: original,
+                mode: "review",
+                conversationType: "review",
+                subjectId: activeSubject?.id,
+                subjectInstruction: activeSubject?.instruction || "",
+                contextText: [
+                    `当前学科：${activeSubject?.name || ""}`,
+                    subjectConversation?.title ? `当前对话：${subjectConversation.title}` : "",
+                    timer?.taskTitle ? `当前任务：${timer.taskTitle}` : "",
+                ].filter(Boolean).join("\n"),
+                history: [],
+                selectedReferences,
+            });
+            const parsed = parseReviewResult(reply, original);
+            setReviewDraft((prev) => ({
+                ...prev,
+                rawSummary: parsed.rawSummary,
+                polishedText: parsed.polishedText,
+                loading: false,
+                error: "",
+            }));
+        } catch (error) {
+            setReviewDraft((prev) => ({
+                ...prev,
+                loading: false,
+                error: error?.message || "AI 总结失败",
+            }));
+        }
+    }
+
+    function saveReviewDraft() {
+        const original = reviewDraft.original.trim();
+        const rawSummary = reviewDraft.rawSummary.trim();
+        const polishedText = reviewDraft.polishedText.trim();
+        if (!activeSubject?.id || !original || (!rawSummary && !polishedText)) {
+            setReviewDraft((prev) => ({ ...prev, error: "请先输入原始自述并生成或填写总结。" }));
+            return;
+        }
+        const item = {
+            id: `review-${uid()}`,
+            original,
+            rawSummary,
+            polishedText,
+            harvest: polishedText || rawSummary,
+            status: "pending",
+            conversationId: isLocalConversationId(activeSubjectConversationId) ? "" : activeSubjectConversationId || "",
+            keepOriginal: reviewDraft.keepOriginal,
+            metadata: {
+                rawSummary,
+                keepOriginal: reviewDraft.keepOriginal,
+                source: "manual-review-draft",
+                conversationTitle: subjectConversation?.title || "",
+            },
+            createdAt: new Date().toISOString(),
+        };
+        setSubjectReviews((prev) => ({
+            ...prev,
+            [activeSubject.id]: [item, ...(prev[activeSubject.id] || [])],
+        }));
+        if (currentUser?.id && !String(activeSubject.id).startsWith("subject-")) {
+            upsertSubjectReview({
+                subjectId: activeSubject.id,
+                conversationId: item.conversationId || null,
+                originalText: reviewDraft.keepOriginal ? original : "",
+                polishedText,
+                harvestText: polishedText || rawSummary,
+                status: "pending",
+                metadata: item.metadata,
+            }, { userId: currentUser.id })
+                .then((saved) => {
+                    if (!saved?.id) return;
+                    setSubjectReviews((prev) => ({
+                        ...prev,
+                        [activeSubject.id]: (prev[activeSubject.id] || []).map((review) => (
+                            review.id === item.id ? toLocalReview(saved) : review
+                        )),
+                    }));
+                })
+                .catch((error) => {
+                    setSubjectReviews((prev) => ({
+                        ...prev,
+                        [activeSubject.id]: (prev[activeSubject.id] || []).filter((review) => review.id !== item.id),
+                    }));
+                    setNotice(error?.message || "复盘保存失败：请检查 Supabase subject_review_items 表");
+                });
+        } else {
+            setNotice("复盘已本地暂存；登录并使用真实学科后才会写入 Supabase");
+        }
+        setReviewDraft({
+            original: "",
+            rawSummary: "",
+            polishedText: "",
+            keepOriginal: true,
+            loading: false,
+            error: "",
+        });
+        if (currentUser?.id && !String(activeSubject.id).startsWith("subject-")) {
+            setNotice("复盘已保存到待确认收获，确认后进入 Supabase subject_review_items");
+        }
     }
 
     return (
@@ -1840,7 +2294,11 @@ export default function FlowApp() {
                 setView={setView}
                 subjects={displaySubjects}
                 activeSubjectId={activeSubjectId}
+                activeSubjectConversationId={activeSubjectConversationId}
                 openSubject={openSubject}
+                subjectConversationsById={sidebarSubjectConversations}
+                openSubjectConversation={openSubjectConversation}
+                startSubjectConversation={startSubjectConversation}
                 freeConversations={freeConversations}
                 activeFreeId={activeFreeId}
                 setActiveFreeId={setActiveFreeId}
@@ -1849,6 +2307,8 @@ export default function FlowApp() {
                 timer={timer}
                 openModal={setModal}
                 startQuickTimer={startQuickTimer}
+                goStudy={goToCurrentStudy}
+                openTaskDetail={openCurrentTaskDetail}
             />
 
             <main className="main">
@@ -1863,6 +2323,7 @@ export default function FlowApp() {
                         newConversation={newPlanningConversation}
                         drafts={currentDrafts}
                         confirmDraft={confirmDraft}
+                        confirmAllDrafts={confirmCurrentDrafts}
                         deleteDraft={deleteDraft}
                         openTaskDetail={(task) => {
                             setDetailTask(task);
@@ -1873,7 +2334,7 @@ export default function FlowApp() {
                         input={input}
                         setInput={setInput}
                         sendPlanningMessage={sendPlanningMessage}
-                        messages={planningMessages.length > 0 ? planningMessages : (messages[`planning:${planningConversationId}`] || [])}
+                        messages={planningMessages}
                         openSource={() => setModal("source")}
                         selectedReferences={selectedReferences}
                         webEnabled={webEnabled}
@@ -1887,6 +2348,7 @@ export default function FlowApp() {
                         subjects={displaySubjects}
                         startTimer={startTimer}
                         createSubject={createSubjectQuick}
+                        openNewSubject={() => setView("new-subject")}
                         aiStatus={aiStatus}
                         aiError={aiError}
                     />
@@ -1898,12 +2360,18 @@ export default function FlowApp() {
                         search={searchLibrary}
                         publicResources={publicResources}
                         privateResources={privateResources}
+                        subjects={displaySubjects}
+                        subjectResources={subjectResources}
+                        activeSubjectId={activeSubject?.id || ""}
                         uploadPrivate={uploadPrivate}
                         openPublicUpload={() => setPublicUploadOpen(true)}
                         openPrivateResource={openPrivateResource}
                         openPublicResource={openPublicResource}
                         downloadPublicResource={downloadPublicResource}
                         referencePublicResource={addSubjectResource}
+                        referencePrivateResource={addSubjectResource}
+                        removeSubjectResource={removeSubjectResource}
+                        deletePrivateResource={deletePrivateResource}
                     />
                 )}
                 {view === "subject" && (
@@ -1923,6 +2391,7 @@ export default function FlowApp() {
                         updateSubject={updateActiveSubject}
                         saveSubject={saveActiveSubjectSettings}
                         deleteConversation={deleteSubjectConversation}
+                        deleteSubject={deleteSubject}
                         openRenameDialog={setRenameDialog}
                         uploadAttachment={uploadChatAttachment}
                         webEnabled={webEnabled}
@@ -1933,7 +2402,7 @@ export default function FlowApp() {
                 )}
                 {view === "chat" && (
                     <ChatView
-                        title={`${activeSubject.name} / ${(subjectConversation?.title || "新对话")}`}
+                        title={`${activeSubject?.name || "未选择学科"} / ${(subjectConversation?.title || "新对话")}`}
                         chatTab={chatTab}
                         setChatTab={setChatTab}
                         messages={visibleMessages}
@@ -1946,6 +2415,10 @@ export default function FlowApp() {
                         finish={() => setModal("finish")}
                         reviews={currentReviews}
                         confirmReviews={confirmCurrentReviews}
+                        reviewDraft={reviewDraft}
+                        setReviewDraft={setReviewDraft}
+                        summarizeReviewDraft={summarizeReviewDraft}
+                        saveReviewDraft={saveReviewDraft}
                         aiStatus={aiStatus}
                         aiError={aiError}
                         webEnabled={webEnabled}
@@ -1954,6 +2427,11 @@ export default function FlowApp() {
                         uploadAttachment={uploadChatAttachment}
                         attachmentCount={selectedAttachmentIds.length}
                         onRename={() => activeSubjectConversationId && setRenameDialog({ type: "subject", id: activeSubjectConversationId, title: subjectConversation?.title || "新对话" })}
+                        onDelete={() => {
+                            if (!activeSubjectConversationId) return;
+                            deleteSubjectConversation(activeSubjectConversationId);
+                            setView("subject");
+                        }}
                     />
                 )}
                 {view === "free-chat" && (
@@ -1972,6 +2450,11 @@ export default function FlowApp() {
                         uploadAttachment={uploadChatAttachment}
                         attachmentCount={selectedAttachmentIds.length}
                         onRename={() => activeFreeId && setRenameDialog({ type: "free", id: activeFreeId, title: freeConversation?.title || "新对话" })}
+                        onDelete={() => {
+                            if (!activeFreeId) return;
+                            deleteFreeConversation(activeFreeId);
+                            setView("free-chat");
+                        }}
                     />
                 )}
                 {view === "new-subject" && (
@@ -1993,6 +2476,7 @@ export default function FlowApp() {
                 search={searchSources}
                 results={sourceResults}
                 addResource={addSubjectResource}
+                previewResource={openSubjectResource}
                 currentResources={currentSubjectResources}
                 selectedReferences={selectedReferences}
                 close={() => setModal("")}
@@ -2006,11 +2490,30 @@ export default function FlowApp() {
             />
             <TaskDetailModal
                 open={modal === "task-detail"}
-                task={detailTask || tasks[0]}
+                task={detailTask || displayTasks[0] || null}
                 close={() => setModal("")}
                 startTimer={(task) => {
                     setModal("");
                     startTimer(task);
+                }}
+                addToSchedule={(task) => {
+                    if (task?.status !== "draft") return;
+                    confirmDraft(task);
+                    setDetailTask((prev) => prev ? { ...prev, status: "confirmed" } : prev);
+                    setModal("");
+                }}
+                editTask={(task) => {
+                    setTaskForm({
+                        title: task?.title || "",
+                        subject: task?.subject || "",
+                        date: task?.date || task?.plannedDate || todayKey(),
+                        start: task?.start || task?.startTime || "19:00",
+                        end: task?.end || task?.endTime || "20:00",
+                        description: task?.description || "",
+                    });
+                    setModal("");
+                    setView("plan");
+                    setPlanTab("tasks");
                 }}
             />
             <FinishModal
@@ -2054,8 +2557,12 @@ export default function FlowApp() {
                     deleteSubject(subjectId);
                     setActionDialog(null);
                 }}
-                onDeleteConversation={(conversationId) => {
-                    deleteFreeConversation(conversationId);
+                onDeleteConversation={(conversationId, kind = "free") => {
+                    if (kind === "subject") {
+                        deleteSubjectConversation(conversationId);
+                    } else {
+                        deleteFreeConversation(conversationId);
+                    }
                     setActionDialog(null);
                 }}
                 onMoveConversation={(conversationId, subjectId) => {

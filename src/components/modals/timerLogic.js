@@ -4,6 +4,7 @@ export const TIMER_MODE = {
 };
 
 export const POMODORO_SECONDS = 25 * 60;
+export const POMODORO_REST_SECONDS = 5 * 60;
 
 export function formatTimerSeconds(totalSeconds = 0) {
     const safeSeconds = Math.max(0, Math.floor(Number(totalSeconds) || 0));

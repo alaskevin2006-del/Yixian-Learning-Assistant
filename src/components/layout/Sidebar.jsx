@@ -14,7 +14,11 @@ export function Sidebar({
     setView,
     subjects,
     activeSubjectId,
+    activeSubjectConversationId,
     openSubject,
+    subjectConversationsById,
+    openSubjectConversation,
+    startSubjectConversation,
     freeConversations,
     activeFreeId,
     setActiveFreeId,
@@ -23,6 +27,8 @@ export function Sidebar({
     timer,
     openModal,
     startQuickTimer,
+    goStudy,
+    openTaskDetail,
 }) {
     const [subjectsOpen, setSubjectsOpen] = useState(true);
     const [freeOpen, setFreeOpen] = useState(true);
@@ -43,12 +49,36 @@ export function Sidebar({
                     <button className="nav-heading" onClick={() => setSubjectsOpen((value) => !value)}><span><span>{subjectsOpen ? "▾" : "▸"}</span><span className="text">学科</span></span></button>
                     <div className={`subject-list ${subjectsOpen ? "" : "collapsed"}`}>
                         <button className={`nav-item ${view === "new-subject" ? "active" : ""}`} onClick={() => setView("new-subject")}><span className="nav-label">+ 新学科</span></button>
-                        {subjects.map((subject) => (
-                            <div className={`nav-row ${view === "subject" && activeSubjectId === subject.id ? "is-active" : ""}`} key={subject.id}>
-                                <button className={`nav-item ${view === "subject" && activeSubjectId === subject.id ? "active" : ""}`} onClick={() => openSubject(subject.id)}><span className="nav-label">{subject.name}</span></button>
-                                <button className="row-menu" title="更多操作" onClick={() => openActionDialog({ type: "subject", subject })}>⋯</button>
-                            </div>
-                        ))}
+                        {subjects.map((subject) => {
+                            const isActiveSubject = activeSubjectId === subject.id && (view === "subject" || view === "chat");
+                            const conversations = subjectConversationsById?.[subject.id] || [];
+                            return (
+                                <div className="subject-nav-block" key={subject.id}>
+                                    <div className={`nav-row ${isActiveSubject ? "is-active" : ""}`}>
+                                        <button className={`nav-item ${isActiveSubject && view === "subject" ? "active" : ""}`} onClick={() => openSubject(subject.id)}><span className="nav-label">{subject.name}</span></button>
+                                        <button className="row-menu" title="更多操作" onClick={() => openActionDialog({ type: "subject", subject })}>⋯</button>
+                                    </div>
+                                    {isActiveSubject && (
+                                        <div className="subject-thread-list">
+                                            <button className={`subitem subject-thread-new ${view === "chat" && !activeSubjectConversationId ? "active" : ""}`} onClick={() => startSubjectConversation(subject.id)}>
+                                                <span className="nav-label">新建对话</span>
+                                            </button>
+                                            {conversations.map((conversation) => (
+                                                <div className={`nav-row compact ${view === "chat" && activeSubjectConversationId === conversation.id ? "is-active" : ""}`} key={conversation.id}>
+                                                    <button
+                                                        className={`subitem ${view === "chat" && activeSubjectConversationId === conversation.id ? "active" : ""}`}
+                                                        onClick={() => openSubjectConversation(subject.id, conversation.id)}
+                                                    >
+                                                        <span className="nav-label">{conversation.title}</span>
+                                                    </button>
+                                                    <button className="row-menu" title="更多操作" onClick={() => openActionDialog({ type: "subject-conversation", conversation, subject })}>⋯</button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })}
                     </div>
                 </div>
                 <div className="nav-gap" />
@@ -79,7 +109,8 @@ export function Sidebar({
                     <span>{timer.running ? `${timer.subject} · ${timer.elapsed}` : "暂无进行中的计时"}</span>
                     <div className="mini-actions">
                         <button className="mini-btn" onClick={() => { startQuickTimer(); openModal("timer"); }}>计时</button>
-                        <button className="mini-btn" onClick={() => setView("subject")}>去学习</button>
+                        <button className="mini-btn" onClick={goStudy}>去学习</button>
+                        <button className="mini-btn" onClick={openTaskDetail}>详情</button>
                     </div>
                 </div>
                 <button className={`nav-item ${view === "settings" ? "active" : ""}`} onClick={() => setView("settings")}><span className="nav-label">设置</span></button>
